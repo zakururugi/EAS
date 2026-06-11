@@ -238,9 +238,23 @@ In the Vercel project settings, add all environment variables from `.env.example
 vercel --prod
 ```
 
-### Step 6: Verify Cron Job
+### Step 6: Set Up External Cron (cron-job.org)
 
-The cron job is configured in `vercel.json` and runs every minute. To test it manually:
+Since Vercel's Hobby plan only supports cron jobs once per day, use **cron-job.org** (free) to call the endpoint every minute.
+
+1. **Sign up** at [cron-job.org](https://cron-job.org)
+2. **Create a new cron job** with these settings:
+   - **URL**: `https://your-app.vercel.app/api/cron/check-quakes`
+   - **Method**: `GET` (or `POST`)
+   - **Headers** (add a custom HTTP header):
+     - Name: `Authorization`
+     - Value: `Bearer YOUR_CRON_SECRET` (use the same value as your `CRON_SECRET` env var)
+   - **Schedule**: `*/1 * * * *` (every minute)
+3. Save and enable the cron job.
+
+### Step 7: Test the Cron Endpoint
+
+Once deployed, test the cron endpoint manually:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
@@ -257,6 +271,13 @@ Expected response:
   "durationMs": 1234
 }
 ```
+
+You can also test the health check endpoint (no auth required):
+```bash
+curl https://your-app.vercel.app/api/cron/health
+# → { "status": "ok", "timestamp": ..., "version": "1.0.0" }
+```
+The health endpoint is useful for cron-job.org to verify your site is alive.
 
 ## API Reference
 

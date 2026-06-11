@@ -23,8 +23,18 @@ const USGS_FEED = 'earthquakes/feed/v1.0/summary/4.5_day.geojson';
 
 export default async function handler(req, res) {
   // Verify CRON_SECRET
+  const secret = process.env.CRON_SECRET;
+  if (!secret || secret.length < 8) {
+    console.error('[cron/check-quakes] CRON_SECRET environment variable is missing or too short.');
+    res.status(500).json({
+      error: 'Server configuration error: CRON_SECRET is missing or invalid.',
+      hint: 'Set the CRON_SECRET environment variable in Vercel Dashboard or .env file.',
+    });
+    return;
+  }
+
   const authHeader = req.headers['authorization'] || '';
-  const expectedToken = `Bearer ${process.env.CRON_SECRET}`;
+  const expectedToken = `Bearer ${secret}`;
 
   if (authHeader !== expectedToken) {
     res.status(401).json({ error: 'Unauthorized. Invalid or missing CRON_SECRET.' });

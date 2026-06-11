@@ -10,12 +10,6 @@
       "destination": "/api/$1"
     }
   ],
-  "crons": [
-    {
-      "path": "/api/cron/check-quakes",
-      "schedule": "* * * * *"
-    }
-  ],
   "env": {
     "NODE_ENV": "production"
   },

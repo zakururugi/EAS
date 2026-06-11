@@ -18,12 +18,12 @@
 // Vercel environment variables.
 // ============================================================
 const FIREBASE_CONFIG = {
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'YOUR_PROJECT.firebaseapp.com',
-  projectId: 'YOUR_PROJECT_ID',
-  storageBucket: 'YOUR_PROJECT.appspot.com',
-  messagingSenderId: 'YOUR_SENDER_ID',
-  appId: 'YOUR_APP_ID',
+  apiKey: 'AIzaSyCPlJEwmVvFn8uJWyJCsJrdfiUi-MAaY24',
+  authDomain: 'earthquake-alert-system-de65f.firebaseapp.com',
+  projectId: 'earthquake-alert-system-de65f',
+  storageBucket: 'earthquake-alert-system-de65f.firebasestorage.app',
+  messagingSenderId: '318850794102',
+  appId: '1:318850794102:web:27d44528361bc2f9d59557',
 };
 
 // Import Firebase scripts using importScripts (standard SW approach)
