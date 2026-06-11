@@ -7,9 +7,6 @@ import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import L from 'leaflet';
 import 'leaflet-draw';
 
-/**
- * Get color based on earthquake magnitude.
- */
 function getMagColor(mag) {
   if (mag >= 7) return '#ff1744';
   if (mag >= 6) return '#ff6d00';
@@ -17,9 +14,6 @@ function getMagColor(mag) {
   return '#00e676';
 }
 
-/**
- * Get circle radius based on magnitude.
- */
 function getMagRadius(mag) {
   return Math.max(12, Math.min(48, mag * 6));
 }
@@ -49,19 +43,20 @@ export default {
     let resizeObserver = null;
     let legendControl = null;
     let magnitudeLegendControl = null;
+    let hasFlownToUser = false;
 
     const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
     const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
 
     /**
-     * Initialize the Leaflet map.
+     * Initialize the Leaflet map, centered on Philippines.
      */
     function initMap() {
       if (!mapContainer.value) return;
 
       map = L.map(mapContainer.value, {
-        center: [0, 0],
-        zoom: 2,
+        center: [12.8797, 121.7740],
+        zoom: 6,
         zoomControl: true,
         attributionControl: true,
         trackResize: false,
@@ -87,22 +82,13 @@ export default {
             allowIntersection: false,
             showArea: true,
             shapeOptions: {
-              color: '#64ffda',
-              weight: 2,
-              opacity: 0.8,
-              fillOpacity: 0.15,
+              color: '#64ffda', weight: 2, opacity: 0.8, fillOpacity: 0.15,
             },
           },
-          polyline: false,
-          rectangle: false,
-          circle: false,
-          circlemarker: false,
-          marker: false,
+          polyline: false, rectangle: false, circle: false,
+          circlemarker: false, marker: false,
         },
-        edit: {
-          featureGroup: drawnItems,
-          remove: true,
-        },
+        edit: { featureGroup: drawnItems, remove: true },
       });
       map.addControl(drawControl);
 
@@ -112,10 +98,7 @@ export default {
           const latlngs = layer.getLatLngs()[0];
           const coordinates = latlngs.map((ll) => [ll.lng, ll.lat]);
           layer.setStyle({
-            color: '#64ffda',
-            weight: 2,
-            opacity: 0.8,
-            fillOpacity: 0.15,
+            color: '#64ffda', weight: 2, opacity: 0.8, fillOpacity: 0.15,
           });
           drawnItems.addLayer(layer);
           emit('zone-created', coordinates);
@@ -123,15 +106,11 @@ export default {
       });
 
       map.on('click', () => {
-        if (props.selectedEventId) {
-          emit('select-event', null);
-        }
+        if (props.selectedEventId) emit('select-event', null);
       });
 
-      map.fitWorld();
       setTimeout(() => map.invalidateSize(), 100);
 
-      // ResizeObserver for proper map resizing
       if (window.ResizeObserver) {
         resizeObserver = new ResizeObserver(() => {
           if (map) map.invalidateSize();
@@ -141,8 +120,17 @@ export default {
     }
 
     /**
-     * Create a custom divIcon showing magnitude number inside a colored circle.
+     * Public method to fly to a specific location.
      */
+    function flyToLocation(lat, lng, zoom) {
+      if (!map) return;
+      isFlyingToSelected = true;
+      map.flyTo([lat, lng], zoom || map.getZoom(), { duration: 1 });
+      map.once('moveend', () => {
+        isFlyingToSelected = false;
+      });
+    }
+
     function createMagMarker(event, isSelected) {
       const mag = event.magnitude || 0;
       const color = getMagColor(mag);
@@ -166,13 +154,9 @@ export default {
       });
     }
 
-    /**
-     * Render earthquake epicenters using custom divIcon markers.
-     */
     function renderEvents() {
       if (!eventLayerGroup) return;
       eventLayerGroup.clearLayers();
-
       if (!props.events || props.events.length === 0) return;
 
       props.events.forEach((event) => {
@@ -200,8 +184,9 @@ export default {
               <p><strong>Depth:</strong> ${event.depth?.toFixed(1) || '?'} km</p>
               ${event.mmi ? `<p><strong>MMI:</strong> ${event.mmi}</p>` : ''}
               ${event.felt ? `<p><strong>Felt reports:</strong> ${event.felt}</p>` : ''}
+              ${event.source ? `<p><strong>Source:</strong> ${event.source}</p>` : ''}
             </div>
-            <div class="popup-actions" style="margin-top:8px; display:flex; gap:6px;">
+            <div class="popup-actions" style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
               <button class="popup-btn shake-btn" data-event-id="${event.id}">
                 Show ShakeMap
               </button>
@@ -217,44 +202,32 @@ export default {
           className: 'quake-popup-container',
         });
 
-        // Popup event binding using document-level delegation to avoid stale listeners
-        let popupHandlerAttached = false;
-
+        // Robust popup event delegation using closest()
         marker.on('popupopen', () => {
-          if (popupHandlerAttached) return;
-          popupHandlerAttached = true;
-
-          // Use a small delay and add one-time delegated listeners
           setTimeout(() => {
             const popupEl = marker.getPopup()?.getElement();
             if (!popupEl) return;
 
-            const handleShakeClick = (e) => {
-              const btn = e.target.closest('.shake-btn');
-              if (!btn) return;
-              e.stopPropagation();
-              emit('select-event', btn.dataset.eventId);
-              marker.closePopup();
+            const handleClick = (e) => {
+              const shakeBtn = e.target.closest('.shake-btn');
+              const feltBtn = e.target.closest('.felt-btn-popup');
+
+              if (shakeBtn) {
+                e.stopPropagation();
+                emit('select-event', shakeBtn.dataset.eventId);
+                marker.closePopup();
+              } else if (feltBtn) {
+                e.stopPropagation();
+                emit('select-event', feltBtn.dataset.eventId);
+                marker.closePopup();
+                document.dispatchEvent(new CustomEvent('show-felt-dialog'));
+              }
             };
 
-            const handleFeltClick = (e) => {
-              const btn = e.target.closest('.felt-btn-popup');
-              if (!btn) return;
-              e.stopPropagation();
-              emit('select-event', btn.dataset.eventId);
-              marker.closePopup();
-              document.dispatchEvent(new CustomEvent('show-felt-dialog'));
-            };
-
-            popupEl.addEventListener('click', handleShakeClick);
-            popupEl.addEventListener('click', handleFeltClick);
-
-            // Clean up on popup close
-            marker.on('popupclose', () => {
-              popupEl.removeEventListener('click', handleShakeClick);
-              popupEl.removeEventListener('click', handleFeltClick);
-              popupHandlerAttached = false;
-            }, { once: true });
+            popupEl.addEventListener('click', handleClick);
+            marker.once('popupclose', () => {
+              popupEl.removeEventListener('click', handleClick);
+            });
           }, 50);
         });
 
@@ -265,22 +238,22 @@ export default {
         eventLayerGroup.addLayer(marker);
       });
 
-      // Fly to selected event with loop protection
+      // Fly to selected event, preserving current zoom level
       if (props.selectedEventId && !isFlyingToSelected) {
         const selEvent = props.events.find((e) => e.id === props.selectedEventId);
         if (selEvent && selEvent.latitude && selEvent.longitude) {
           isFlyingToSelected = true;
-          map.flyTo([selEvent.latitude, selEvent.longitude], Math.min(map.getZoom(), 6), {
-            duration: 1,
+          const currentZoom = map.getZoom();
+          map.flyTo([selEvent.latitude, selEvent.longitude], currentZoom, {
+            duration: 0.8,
           });
-          setTimeout(() => { isFlyingToSelected = false; }, 1200);
+          map.once('moveend', () => {
+            isFlyingToSelected = false;
+          });
         }
       }
     }
 
-    /**
-     * Render ShakeMap intensity contours.
-     */
     function renderShakeMap() {
       if (!shakemapLayerGroup) return;
       shakemapLayerGroup.clearLayers();
@@ -307,10 +280,7 @@ export default {
           if (feature.properties) {
             const mmi = feature.properties.MMI || feature.properties.value || feature.properties.CONTAMMI;
             const label = mmi != null ? `MMI ${mmi}` : 'Intensity contour';
-            layer.bindTooltip(label, {
-              sticky: true,
-              className: 'shakemap-tooltip',
-            });
+            layer.bindTooltip(label, { sticky: true, className: 'shakemap-tooltip' });
           }
         },
       });
@@ -318,45 +288,28 @@ export default {
       shakemapLayerGroup.addLayer(contourLayer);
 
       if (contourLayer.getBounds().isValid()) {
-        map.fitBounds(contourLayer.getBounds(), {
-          padding: [50, 50],
-          maxZoom: 10,
-        });
+        map.fitBounds(contourLayer.getBounds(), { padding: [50, 50], maxZoom: 10 });
       }
     }
 
-    /**
-     * Style function for ShakeMap contour features.
-     */
     function getContourStyle(feature) {
       const mmi = feature?.properties?.MMI ||
                   feature?.properties?.value ||
-                  feature?.properties?.CONTAMMI ||
-                  0;
-
+                  feature?.properties?.CONTAMMI || 0;
       const colors = {
         1: '#ffffff', 2: '#dcdcdc', 3: '#c8c8c8',
         4: '#b0b0b0', 5: '#ffff00', 6: '#ffcc00',
-        7: '#ff9900', 8: '#ff6600', 9: '#ff3300',
-        10: '#ff0000',
+        7: '#ff9900', 8: '#ff6600', 9: '#ff3300', 10: '#ff0000',
       };
-
       const color = colors[Math.round(mmi)] || '#ff0000';
       const isPolygon = feature?.geometry?.type === 'Polygon' ||
                         feature?.geometry?.type === 'MultiPolygon';
-
       return {
-        color,
-        weight: isPolygon ? 1 : 2,
-        opacity: 0.6,
-        fillColor: color,
-        fillOpacity: isPolygon ? 0.15 : 0,
+        color, weight: isPolygon ? 1 : 2, opacity: 0.6,
+        fillColor: color, fillOpacity: isPolygon ? 0.15 : 0,
       };
     }
 
-    /**
-     * Render user's watch zones.
-     */
     function renderZones() {
       if (!zonesLayerGroup) return;
       zonesLayerGroup.clearLayers();
@@ -365,28 +318,19 @@ export default {
       props.watchZones.forEach((zone) => {
         if (!zone.polygon || zone.polygon.length < 3) return;
         const latlngs = zone.polygon.map(([lon, lat]) => [lat, lon]);
-
         const polygon = L.polygon(latlngs, {
-          color: '#64ffda',
-          weight: 2,
-          opacity: 0.8,
-          fillColor: '#64ffda',
-          fillOpacity: 0.1,
-          dashArray: '5, 10',
+          color: '#64ffda', weight: 2, opacity: 0.8,
+          fillColor: '#64ffda', fillOpacity: 0.1, dashArray: '5, 10',
         });
-
         polygon.bindTooltip(
           `${zone.name || 'Watch Zone'} (≥M${zone.min_magnitude || 4.5})`,
           { sticky: true, className: 'zone-tooltip' }
         );
-
         zonesLayerGroup.addLayer(polygon);
       });
     }
 
-    // ============================================================
-    // Magnitude legend (always visible)
-    // ============================================================
+    // Magnitude legend
     const magLegend = {
       onAdd() {
         const div = L.DomUtil.create('div', 'map-legend mag-legend');
@@ -403,9 +347,7 @@ export default {
       },
     };
 
-    // ============================================================
     // ShakeMap MMI legend
-    // ============================================================
     const shakemapLegend = {
       onAdd() {
         const div = L.DomUtil.create('div', 'map-legend shakemap-legend');
@@ -440,7 +382,6 @@ export default {
     watch(() => props.shakemapContours, () => {
       nextTick(() => {
         renderShakeMap();
-
         if (props.shakemapContours && !legendControl) {
           legendControl = L.control({ position: 'bottomright' });
           legendControl.onAdd = shakemapLegend.onAdd;
@@ -456,6 +397,20 @@ export default {
       nextTick(() => renderZones());
     }, { deep: true });
 
+    // Auto-fly to user location when it becomes available
+    watch(() => props.userLocation, (loc) => {
+      if (loc && loc.lat != null && loc.lng != null && !hasFlownToUser) {
+        hasFlownToUser = true;
+        nextTick(() => {
+          isFlyingToSelected = true;
+          map.flyTo([loc.lat, loc.lng], 8, { duration: 1.5 });
+          map.once('moveend', () => {
+            isFlyingToSelected = false;
+          });
+        });
+      }
+    }, { immediate: false });
+
     // ============================================================
     // Lifecycle
     // ============================================================
@@ -463,7 +418,6 @@ export default {
     onMounted(() => {
       initMap();
 
-      // Add permanent magnitude legend
       magnitudeLegendControl = L.control({ position: 'bottomright' });
       magnitudeLegendControl.onAdd = magLegend.onAdd;
       magnitudeLegendControl.addTo(map);
@@ -475,171 +429,57 @@ export default {
     });
 
     onBeforeUnmount(() => {
-      if (resizeObserver) {
-        resizeObserver.disconnect();
-        resizeObserver = null;
-      }
-      if (magnitudeLegendControl && map) {
-        map.removeControl(magnitudeLegendControl);
-      }
-      if (map) {
-        map.remove();
-        map = null;
-      }
+      if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
+      if (magnitudeLegendControl && map) { map.removeControl(magnitudeLegendControl); }
+      if (map) { map.remove(); map = null; }
     });
 
-    return {
-      mapContainer,
-    };
+    // Expose flyToLocation as public method
+    return { mapContainer, flyToLocation };
   },
 };
 </script>
 
 <style>
-.map-container {
-  width: 100%;
-  height: 100%;
-  position: absolute;
-  top: 0;
-  left: 0;
-}
+.map-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
 
-/* Custom magnitude markers */
-.mag-marker {
-  background: transparent !important;
-  border: none !important;
-}
+.mag-marker { background: transparent !important; border: none !important; }
 
 .mag-marker-inner {
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  color: #000;
-  text-shadow: 0 0 2px rgba(255,255,255,0.3);
-  transition: transform 0.15s, box-shadow 0.15s;
-  cursor: pointer;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-weight: 700; color: #000; text-shadow: 0 0 2px rgba(255,255,255,0.3);
+  transition: transform 0.15s, box-shadow 0.15s; cursor: pointer;
 }
+.mag-marker-inner:hover { transform: scale(1.15); }
 
-.mag-marker-inner:hover {
-  transform: scale(1.15);
-}
-
-/* Popup styling */
 .quake-popup-container .leaflet-popup-content-wrapper {
-  background: #1a1a2e;
-  color: #ccd6f6;
-  border: 1px solid #233554;
-  border-radius: 8px;
+  background: #1a1a2e; color: #ccd6f6; border: 1px solid #233554; border-radius: 8px;
 }
-
-.quake-popup-container .leaflet-popup-tip {
-  background: #1a1a2e;
-  border: 1px solid #233554;
-}
-
-.quake-popup-container .leaflet-popup-content {
-  margin: 12px 16px;
-}
-
-.quake-popup p {
-  margin: 4px 0;
-  font-size: 13px;
-  color: #8892b0;
-}
+.quake-popup-container .leaflet-popup-tip { background: #1a1a2e; border: 1px solid #233554; }
+.quake-popup-container .leaflet-popup-content { margin: 12px 16px; }
+.quake-popup p { margin: 4px 0; font-size: 13px; color: #8892b0; }
 
 .popup-btn {
-  background: #233554;
-  color: #64ffda;
-  border: 1px solid #2e4a6b;
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  transition: background 0.2s;
+  background: #233554; color: #64ffda; border: 1px solid #2e4a6b;
+  padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: background 0.2s;
 }
-.popup-btn:hover {
-  background: #2e4a6b;
-}
+.popup-btn:hover { background: #2e4a6b; }
 
-/* Unified legend styling */
 .map-legend {
-  background: rgba(15, 15, 35, 0.92);
-  padding: 10px 14px;
-  border-radius: 8px;
-  border: 1px solid #233554;
-  font-size: 12px;
-  color: #ccd6f6;
-  backdrop-filter: blur(4px);
-  margin-bottom: 6px;
+  background: rgba(15, 15, 35, 0.92); padding: 10px 14px; border-radius: 8px;
+  border: 1px solid #233554; font-size: 12px; color: #ccd6f6;
+  backdrop-filter: blur(4px); margin-bottom: 6px;
 }
+.legend-title { font-weight: bold; margin-bottom: 6px; color: #64ffda; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+.legend-items { display: flex; flex-direction: column; gap: 3px; }
+.legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.legend-item span { display: inline-block; width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.15); flex-shrink: 0; }
 
-.legend-title {
-  font-weight: bold;
-  margin-bottom: 6px;
-  color: #64ffda;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
+.shakemap-tooltip { background: rgba(26, 26, 46, 0.9) !important; color: #ccd6f6 !important; border: 1px solid #233554 !important; font-size: 11px !important; padding: 4px 8px !important; }
+.zone-tooltip { background: rgba(26, 26, 46, 0.9) !important; color: #64ffda !important; border: 1px solid #64ffda !important; font-size: 11px !important; padding: 4px 8px !important; }
 
-.legend-items {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-}
-
-.legend-item span {
-  display: inline-block;
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
-  border: 1px solid rgba(255,255,255,0.15);
-  flex-shrink: 0;
-}
-
-/* ShakeMap tooltip */
-.shakemap-tooltip {
-  background: rgba(26, 26, 46, 0.9) !important;
-  color: #ccd6f6 !important;
-  border: 1px solid #233554 !important;
-  font-size: 11px !important;
-  padding: 4px 8px !important;
-}
-
-/* Zone tooltip */
-.zone-tooltip {
-  background: rgba(26, 26, 46, 0.9) !important;
-  color: #64ffda !important;
-  border: 1px solid #64ffda !important;
-  font-size: 11px !important;
-  padding: 4px 8px !important;
-}
-
-/* Leaflet draw overrides */
-.leaflet-draw-toolbar a {
-  background-color: #1a1a2e !important;
-  background-image: url('https://unpkg.com/leaflet-draw@1.0.4/dist/images/spritesheet.png') !important;
-}
-
-.leaflet-draw-toolbar a:hover {
-  background-color: #16213e !important;
-}
-
-.leaflet-draw-actions a {
-  background: #1a1a2e !important;
-  color: #ccd6f6 !important;
-}
-
-.leaflet-draw-actions a:hover {
-  background: #16213e !important;
-}
+.leaflet-draw-toolbar a { background-color: #1a1a2e !important; background-image: url('https://unpkg.com/leaflet-draw@1.0.4/dist/images/spritesheet.png') !important; }
+.leaflet-draw-toolbar a:hover { background-color: #16213e !important; }
+.leaflet-draw-actions a { background: #1a1a2e !important; color: #ccd6f6 !important; }
+.leaflet-draw-actions a:hover { background: #16213e !important; }
 </style>

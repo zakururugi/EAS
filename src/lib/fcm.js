@@ -11,35 +11,39 @@ let onMessageCallback = null;
 
 /**
  * Parse the VITE_FIREBASE_CONFIG environment variable.
- * This is a JSON string set at build time via Vercel env vars.
- *
- * Example:
- *   VITE_FIREBASE_CONFIG='{"apiKey":"...","authDomain":"...","projectId":"...",...}'
  */
 function getFirebaseConfig() {
   const configStr = import.meta.env.VITE_FIREBASE_CONFIG;
+  const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
+
+  // Debug logging
+  console.log('[FCM] Checking env vars:');
+  console.log('[FCM]   VITE_FIREBASE_CONFIG exists:', !!configStr);
+  console.log('[FCM]   VITE_FIREBASE_CONFIG length:', configStr?.length || 0);
+  console.log('[FCM]   VITE_FIREBASE_VAPID_KEY exists:', !!vapidKey);
+  console.log('[FCM]   VITE_FIREBASE_VAPID_KEY length:', vapidKey?.length || 0);
 
   if (!configStr) {
     console.warn(
-      '[FCM] VITE_FIREBASE_CONFIG not set. Push notifications will be unavailable.',
+      '[FCM] VITE_FIREBASE_CONFIG not set. Push notifications unavailable.',
       'Set VITE_FIREBASE_CONFIG as a JSON string in your .env or Vercel env vars.'
     );
     return null;
   }
 
   try {
-    return JSON.parse(configStr);
+    const parsed = JSON.parse(configStr);
+    console.log('[FCM] Firebase config parsed successfully. Project:', parsed.projectId);
+    return parsed;
   } catch (err) {
     console.error('[FCM] Failed to parse VITE_FIREBASE_CONFIG:', err.message);
+    console.error('[FCM] Config string starts with:', configStr.substring(0, 50) + '...');
     return null;
   }
 }
 
 /**
  * Initialize Firebase app and messaging.
- * Must be called before any other FCM functions.
- *
- * @returns {boolean} - Whether initialization was successful
  */
 export function initFirebase() {
   if (messaging) return true;
@@ -50,27 +54,22 @@ export function initFirebase() {
   try {
     const app = initializeApp(config);
     messaging = getMessaging(app);
+    console.log('[FCM] Firebase initialized successfully. Project:', config.projectId);
 
-    // Listen for foreground messages
     onMessage(messaging, (payload) => {
       console.log('[FCM] Foreground message received:', payload);
-
       if (onMessageCallback) {
         onMessageCallback(payload);
       } else {
-        // Default behavior: show notification
         const { title, body } = payload.notification || {};
         if (title && 'Notification' in window && Notification.permission === 'granted') {
           new Notification(title, {
-            body,
-            icon: '/icons/icon-192x192.png',
-            requireInteraction: true,
+            body, icon: '/icons/icon-192x192.png', requireInteraction: true,
           });
         }
       }
     });
 
-    console.log('[FCM] Firebase initialized successfully');
     return true;
   } catch (err) {
     console.error('[FCM] Firebase initialization failed:', err.message);
@@ -80,35 +79,35 @@ export function initFirebase() {
 
 /**
  * Request notification permission and get FCM token.
- *
- * @param {string} vapidKey - VAPID public key from Firebase Console
- *        (Web Push certificates page)
- * @returns {Promise<{ token: string|null, permission: string }>}
  */
 export async function requestFcmToken(vapidKey) {
   if (!messaging) {
     const initialized = initFirebase();
     if (!initialized) {
+      console.error('[FCM] Cannot get token: Firebase not initialized. Check VITE_FIREBASE_CONFIG');
       return { token: null, permission: 'unavailable' };
     }
   }
 
-  // Check if browser supports notifications
   if (!('Notification' in window)) {
     console.warn('[FCM] This browser does not support notifications');
     return { token: null, permission: 'unsupported' };
   }
 
+  if (!vapidKey) {
+    console.error('[FCM] VAPID key is empty! Cannot get FCM token.');
+    console.error('[FCM] Set VITE_FIREBASE_VAPID_KEY in your environment variables.');
+    return { token: null, permission: 'no_vapid' };
+  }
+
   try {
-    // Request permission
     const permission = await Notification.requestPermission();
+    console.log('[FCM] Notification permission result:', permission);
 
     if (permission !== 'granted') {
-      console.log('[FCM] Notification permission denied');
       return { token: null, permission };
     }
 
-    // Get FCM token
     const token = await getToken(messaging, {
       vapidKey,
       serviceWorkerRegistration: await navigator.serviceWorker.ready,
@@ -119,7 +118,7 @@ export async function requestFcmToken(vapidKey) {
       return { token: null, permission };
     }
 
-    console.log('[FCM] Token obtained successfully');
+    console.log('[FCM] Token obtained successfully, length:', token.length);
     return { token, permission };
   } catch (err) {
     console.error('[FCM] Error getting token:', err.message);
@@ -127,18 +126,10 @@ export async function requestFcmToken(vapidKey) {
   }
 }
 
-/**
- * Register a callback for foreground messages.
- *
- * @param {Function} callback - Called with (payload) when message arrives
- */
 export function onForegroundMessage(callback) {
   onMessageCallback = callback;
 }
 
-/**
- * Get the FCM messaging instance (for advanced usage).
- */
 export function getMessagingInstance() {
   return messaging;
 }

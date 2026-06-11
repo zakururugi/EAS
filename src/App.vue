@@ -148,8 +148,7 @@ import Sidebar from './components/Sidebar.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import * as api from './lib/api.js';
 import { getDeviceId } from './lib/device.js';
-import { fetchPHIVOLCSEarthquakes } from './lib/phivolcs.js';
-import { cacheEvents, loadCachedEvents, cacheShakeMap, loadCachedShakeMap, isOnline, onNetworkChange } from './lib/cache.js';
+import { cacheEvents, loadCachedEvents, cacheShakeMap, loadCachedShakeMap, onNetworkChange } from './lib/cache.js';
 
 export default {
   name: 'App',
@@ -171,6 +170,7 @@ export default {
     const showSidebar = ref(true);
     const showSettings = ref(false);
     const sortBy = ref('time');
+    const mapView = ref(null);
     const userLocation = ref(null);
     const showFeltDialog = ref(false);
     const isOffline = ref(false);
@@ -209,44 +209,16 @@ export default {
         sidebarLoading.value = true;
         error.value = null;
 
-        // Fetch USGS data
-        const usgsPromise = api.fetchLatestEvents({
+        const data = await api.fetchLatestEvents({
           minMagnitude: minMagnitude.value,
           limit: 100,
         });
 
-        // Fetch PHIVOLCS data (parallel)
-        let phivolcsData = [];
-        try {
-          phivolcsData = await fetchPHIVOLCSEarthquakes();
-          hasPHIVOLCS.value = phivolcsData.length > 0;
-        } catch (phErr) {
-          console.warn('[App] PHIVOLCS fetch failed (non-fatal):', phErr.message);
-          phivolcsData = [];
-          hasPHIVOLCS.value = false;
-        }
+        // The backend now filters to Philippines and includes PHIVOLCS data
+        const allEvents = data.events || [];
 
-        // Wait for USGS
-        const usgsData = await usgsPromise;
-        let allEvents = usgsData.events || [];
-
-        // Merge PHIVOLCS data, deduplicate by location proximity
-        if (phivolcsData.length > 0) {
-          const existingKeys = new Set(allEvents.map((e) =>
-            `${e.latitude?.toFixed(1)},${e.longitude?.toFixed(1)}`
-          ));
-
-          for (const phEvent of phivolcsData) {
-            const key = `${phEvent.latitude?.toFixed(1)},${phEvent.longitude?.toFixed(1)}`;
-            if (!existingKeys.has(key) && phEvent.magnitude >= minMagnitude.value) {
-              allEvents.push(phEvent);
-              existingKeys.add(key);
-            }
-          }
-        }
-
-        // Sort by time descending
-        allEvents.sort((a, b) => b.time - a.time);
+        // Check if any events have source='PHIVOLCS'
+        hasPHIVOLCS.value = allEvents.some((e) => e.source === 'PHIVOLCS');
 
         events.value = allEvents;
         lastUpdated.value = Date.now();
@@ -254,7 +226,7 @@ export default {
         // Cache events for offline
         cacheEvents(allEvents);
 
-        console.log(`[App] Loaded ${allEvents.length} events (${phivolcsData.length} from PHIVOLCS)`);
+        console.log(`[App] Loaded ${allEvents.length} events`);
       } catch (err) {
         console.error('[App] Failed to load events:', err.message);
         error.value = err.message;
@@ -341,13 +313,13 @@ export default {
     }
 
     function jumpToMyLocation() {
-      if (userLocation.value) {
-        // Emit to map via a custom event the MapView can listen to
-        // The map component will handle the flyTo via its own prop
-        window.dispatchEvent(new CustomEvent('jump-to-location', {
-          detail: userLocation.value,
-        }));
-      } else {
+      if (userLocation.value && mapView.value) {
+        mapView.value.flyToLocation(
+          userLocation.value.lat,
+          userLocation.value.lng,
+          10
+        );
+      } else if (!userLocation.value) {
         getUserLocation();
       }
     }
