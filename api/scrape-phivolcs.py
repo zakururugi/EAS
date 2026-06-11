@@ -4,13 +4,9 @@ Runs on Vercel with the Python runtime.
 
 Endpoint: GET /api/scrape-phivolcs
 Protected by: Authorization: Bearer <CRON_SECRET>
-Schedule: Called by cron-job.org every minute
 
 Returns JSON:
   { "last_updated": "2026-06-11T...", "earthquakes": [...], "count": N }
-
-Earthquake fields:
-  - id, magnitude, place, time, depth, latitude, longitude, source="PHIVOLCS"
 """
 
 import os
@@ -18,28 +14,23 @@ import json
 import re
 import html
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler
 
 try:
     import requests
     from bs4 import BeautifulSoup
 except ImportError:
-    # Fallback: Vercel Python runtime should have packages from requirements.txt
     pass
 
 
-# Philippines bounding box for filtering
 PH_MIN_LAT = 4.5
 PH_MAX_LAT = 21.5
 PH_MIN_LON = 116.5
 PH_MAX_LON = 126.5
 
-# PHIVOLCS earthquake page URL
 PHIVOLCS_URL = "https://earthquake.phivolcs.dost.gov.ph/"
 
 
 def is_within_philippines(lat, lon):
-    """Check if coordinates are within the Philippines bounding box."""
     if lat is None or lon is None:
         return False
     return (PH_MIN_LAT <= lat <= PH_MAX_LAT and
@@ -47,19 +38,11 @@ def is_within_philippines(lat, lon):
 
 
 def parse_phivolcs_date(date_str):
-    """
-    Parse PHIVOLCS date/time strings.
-    Common formats:
-      - "11 Jun 2026 10:32 PM"
-      - "11 June 2026 - 10:32 PM"
-      - "06/11/2026 10:32:00"
-    """
     if not date_str:
         return int(datetime.now().timestamp() * 1000)
 
     date_str = date_str.strip()
 
-    # Try multiple formats
     formats = [
         "%d %b %Y %I:%M %p",
         "%d %B %Y %I:%M %p",
@@ -76,7 +59,6 @@ def parse_phivolcs_date(date_str):
         except ValueError:
             continue
 
-    # Try with regex: extract date parts
     match = re.search(r'(\d{1,2})\s+(\w+)\s+(\d{4})', date_str)
     if match:
         day, month_str, year = match.groups()
@@ -94,18 +76,11 @@ def parse_phivolcs_date(date_str):
 
 
 def parse_coordinates(coord_str):
-    """
-    Parse coordinate strings like:
-      - "18.46°N, 120.82°E"
-      - "18.46, 120.82"
-      - "9.78°N - 124.98°E"
-    """
     if not coord_str:
         return None, None
 
     coord_str = coord_str.strip()
 
-    # Pattern: digits with optional ° symbol and N/S/E/W
     pattern = r'([\d.]+)°?\s*([NSEW])'
     matches = re.findall(pattern, coord_str, re.IGNORECASE)
 
@@ -119,7 +94,6 @@ def parse_coordinates(coord_str):
         elif direction.upper() in ('E', 'W'):
             lon = val if direction.upper() == 'E' else -val
 
-    # If no direction suffixes, try plain numbers
     if lat is None and lon is None:
         parts = re.findall(r'[\d.]+', coord_str)
         if len(parts) >= 2:
@@ -130,13 +104,6 @@ def parse_coordinates(coord_str):
 
 
 def parse_depth(depth_str):
-    """
-    Parse depth strings like:
-      - "10 km"
-      - "15km"
-      - "10"
-      - "001"
-    """
     if not depth_str:
         return 0
 
@@ -148,10 +115,6 @@ def parse_depth(depth_str):
 
 
 def scrape_phivolcs():
-    """
-    Fetch and parse the PHIVOLCS earthquake page.
-    Returns a list of earthquake dicts.
-    """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                       'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -167,20 +130,17 @@ def scrape_phivolcs():
     soup = BeautifulSoup(response.text, 'html.parser')
     earthquakes = []
 
-    # Strategy 1: Look for tables with earthquake data
     tables = soup.find_all('table')
     for table in tables:
         rows = table.find_all('tr')
         if len(rows) < 2:
             continue
 
-        # Check if this looks like an earthquake table
         header_text = table.get_text().lower()
         if not any(kw in header_text for kw in ['magnitude', 'mag', 'depth',
                                                   'location', 'lat', 'time']):
             continue
 
-        # Determine column indices by parsing header row
         header_cells = rows[0].find_all(['th', 'td'])
         col_map = {}
         for i, cell in enumerate(header_cells):
@@ -203,7 +163,6 @@ def scrape_phivolcs():
         if 'magnitude' not in col_map:
             continue
 
-        # Parse data rows
         for row in rows[1:]:
             cells = row.find_all(['td', 'th'])
             if len(cells) < 2:
@@ -252,11 +211,9 @@ def scrape_phivolcs():
                         except (AttributeError, ValueError):
                             pass
 
-            # Assign a stable ID
             event_id_str = f"ph-{event['time']}-{event['magnitude']}-{event['latitude'] or 0}-{event['longitude'] or 0}"
             event['id'] = event_id_str
 
-            # Filter to Philippines only
             lat = event['latitude']
             lon = event['longitude']
             if lat is not None and lon is not None:
@@ -267,11 +224,9 @@ def scrape_phivolcs():
                 earthquakes.append(event)
 
         if earthquakes:
-            break  # Found data in this table
+            break
 
-    # Strategy 2: If no table found, look for div-based listings
     if not earthquakes:
-        # Look for earthquake list items
         items = soup.select('.earthquake-item, .eq-item, .quake-item, '
                             '[class*="earthquake"], [class*="eq-list"]')
         for item in items:
@@ -280,7 +235,6 @@ def scrape_phivolcs():
             mag_match = re.search(r'mag[\s:]*([\d.]+)', text, re.IGNORECASE)
             depth_match = re.search(r'depth[\s:]*([\d.]+)', text, re.IGNORECASE)
             coord_match = re.search(r'([\d.]+)°?\s*[NnSs],?\s*([\d.]+)°?\s*[EeWw]', text)
-            time_match = re.search(r'(\d{1,2}\s+\w+\s+\d{4})', text)
 
             mag = float(mag_match.group(1)) if mag_match else 0
             depth = float(depth_match.group(1)) if depth_match else 0
@@ -309,36 +263,41 @@ def scrape_phivolcs():
     return earthquakes
 
 
+from http.server import BaseHTTPRequestHandler
+
+
 class handler(BaseHTTPRequestHandler):
     """Vercel Python serverless function handler."""
 
     def do_GET(self):
-        return self.handle_request()
+        self._handle_request()
 
     def do_POST(self):
-        return self.handle_request()
+        self._handle_request()
 
-    def handle_request(self):
-        # Verify CRON_SECRET
+    def _handle_request(self):
         secret = os.environ.get('CRON_SECRET', '')
-        auth_header = self.headers.get('Authorization', '')
+        auth_header = self.headers.get('Authorization', '') if self.headers else ''
 
         if not secret:
-            self.send_json(500, {
-                'error': 'CRON_SECRET not configured on server',
-                'hint': 'Set CRON_SECRET environment variable in Vercel Dashboard',
-            })
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'error': 'CRON_SECRET not configured',
+            }).encode())
             return
 
         expected = f"Bearer {secret}"
         if auth_header != expected:
-            self.send_json(401, {'error': 'Unauthorized. Invalid or missing CRON_SECRET.'})
+            self.send_response(401)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'Unauthorized'}).encode())
             return
 
         try:
             earthquakes = scrape_phivolcs()
-
-            # Sort by time descending
             earthquakes.sort(key=lambda e: e.get('time', 0), reverse=True)
 
             result = {
@@ -347,23 +306,19 @@ class handler(BaseHTTPRequestHandler):
                 'earthquakes': earthquakes,
             }
 
-            self.send_json(200, result)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
 
         except requests.exceptions.RequestException as e:
-            self.send_json(502, {
-                'error': f'Failed to fetch PHIVOLCS page: {str(e)}',
-            })
+            self.send_response(502)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': f'Fetch failed: {str(e)}'}).encode())
         except Exception as e:
-            self.send_json(500, {
-                'error': f'Scraping failed: {str(e)}',
-            })
-
-    def send_json(self, status, data):
-        """Send a JSON response."""
-        body = json.dumps(data).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': f'Scraping failed: {str(e)}'}).encode())

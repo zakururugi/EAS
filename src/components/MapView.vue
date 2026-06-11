@@ -18,6 +18,25 @@ function getMagRadius(mag) {
   return Math.max(12, Math.min(48, mag * 6));
 }
 
+const MMI_DESCRIPTIONS = {
+  1: 'Not felt',
+  2: 'Weak',
+  3: 'Weak',
+  4: 'Light',
+  5: 'Moderate',
+  6: 'Strong',
+  7: 'Very strong',
+  8: 'Severe',
+  9: 'Violent',
+  10: 'Extreme',
+};
+
+const MMI_COLORS = {
+  1: '#ffffff', 2: '#dcdcdc', 3: '#c8c8c8', 4: '#b0b0b0',
+  5: '#ffff00', 6: '#ffcc00', 7: '#ff9900', 8: '#ff6600',
+  9: '#ff3300', 10: '#ff0000',
+};
+
 export default {
   name: 'MapView',
   props: {
@@ -43,14 +62,10 @@ export default {
     let resizeObserver = null;
     let legendControl = null;
     let magnitudeLegendControl = null;
-    let hasFlownToUser = false;
 
     const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
     const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
 
-    /**
-     * Initialize the Leaflet map, centered on Philippines.
-     */
     function initMap() {
       if (!mapContainer.value) return;
 
@@ -81,9 +96,7 @@ export default {
           polygon: {
             allowIntersection: false,
             showArea: true,
-            shapeOptions: {
-              color: '#64ffda', weight: 2, opacity: 0.8, fillOpacity: 0.15,
-            },
+            shapeOptions: { color: '#64ffda', weight: 2, opacity: 0.8, fillOpacity: 0.15 },
           },
           polyline: false, rectangle: false, circle: false,
           circlemarker: false, marker: false,
@@ -97,9 +110,7 @@ export default {
         if (event.layerType === 'polygon') {
           const latlngs = layer.getLatLngs()[0];
           const coordinates = latlngs.map((ll) => [ll.lng, ll.lat]);
-          layer.setStyle({
-            color: '#64ffda', weight: 2, opacity: 0.8, fillOpacity: 0.15,
-          });
+          layer.setStyle({ color: '#64ffda', weight: 2, opacity: 0.8, fillOpacity: 0.15 });
           drawnItems.addLayer(layer);
           emit('zone-created', coordinates);
         }
@@ -119,9 +130,6 @@ export default {
       }
     }
 
-    /**
-     * Public method to fly to a specific location.
-     */
     function flyToLocation(lat, lng, zoom) {
       if (!map) return;
       isFlyingToSelected = true;
@@ -168,9 +176,7 @@ export default {
           riseOnHover: true,
         });
 
-        const timeStr = event.time
-          ? new Date(event.time).toLocaleString()
-          : 'Unknown';
+        const timeStr = event.time ? new Date(event.time).toLocaleString() : 'Unknown';
         const color = getMagColor(event.magnitude);
 
         const popupContent = `
@@ -202,7 +208,6 @@ export default {
           className: 'quake-popup-container',
         });
 
-        // Robust popup event delegation using closest()
         marker.on('popupopen', () => {
           setTimeout(() => {
             const popupEl = marker.getPopup()?.getElement();
@@ -279,7 +284,8 @@ export default {
         onEachFeature: (feature, layer) => {
           if (feature.properties) {
             const mmi = feature.properties.MMI || feature.properties.value || feature.properties.CONTAMMI;
-            const label = mmi != null ? `MMI ${mmi}` : 'Intensity contour';
+            const desc = mmi != null ? (MMI_DESCRIPTIONS[Math.round(mmi)] || 'Strong') : '';
+            const label = mmi != null ? `MMI ${mmi} (${desc})` : 'Intensity contour';
             layer.bindTooltip(label, { sticky: true, className: 'shakemap-tooltip' });
           }
         },
@@ -296,12 +302,7 @@ export default {
       const mmi = feature?.properties?.MMI ||
                   feature?.properties?.value ||
                   feature?.properties?.CONTAMMI || 0;
-      const colors = {
-        1: '#ffffff', 2: '#dcdcdc', 3: '#c8c8c8',
-        4: '#b0b0b0', 5: '#ffff00', 6: '#ffcc00',
-        7: '#ff9900', 8: '#ff6600', 9: '#ff3300', 10: '#ff0000',
-      };
-      const color = colors[Math.round(mmi)] || '#ff0000';
+      const color = MMI_COLORS[Math.round(mmi)] || '#ff0000';
       const isPolygon = feature?.geometry?.type === 'Polygon' ||
                         feature?.geometry?.type === 'MultiPolygon';
       return {
@@ -330,7 +331,6 @@ export default {
       });
     }
 
-    // Magnitude legend
     const magLegend = {
       onAdd() {
         const div = L.DomUtil.create('div', 'map-legend mag-legend');
@@ -347,29 +347,21 @@ export default {
       },
     };
 
-    // ShakeMap MMI legend
     const shakemapLegend = {
       onAdd() {
         const div = L.DomUtil.create('div', 'map-legend shakemap-legend');
+        let items = Object.entries(MMI_DESCRIPTIONS).map(([mmi, desc]) => {
+          const color = MMI_COLORS[mmi] || '#ff0000';
+          const roman = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'][mmi] || mmi;
+          return `<div class="legend-item"><span style="background:${color}"></span> ${roman} – ${desc}</div>`;
+        }).join('');
         div.innerHTML = `
-          <div class="legend-title">MMI Intensity</div>
-          <div class="legend-items">
-            <div class="legend-item"><span style="background:#ffffff"></span> I</div>
-            <div class="legend-item"><span style="background:#ffff00"></span> V</div>
-            <div class="legend-item"><span style="background:#ffcc00"></span> VI</div>
-            <div class="legend-item"><span style="background:#ff9900"></span> VII</div>
-            <div class="legend-item"><span style="background:#ff6600"></span> VIII</div>
-            <div class="legend-item"><span style="background:#ff3300"></span> IX</div>
-            <div class="legend-item"><span style="background:#ff0000"></span> X+</div>
-          </div>
+          <div class="legend-title">ShakeMap Intensity</div>
+          <div class="legend-items">${items}</div>
         `;
         return div;
       },
     };
-
-    // ============================================================
-    // Watchers
-    // ============================================================
 
     watch(() => props.events, () => {
       nextTick(() => renderEvents());
@@ -397,10 +389,8 @@ export default {
       nextTick(() => renderZones());
     }, { deep: true });
 
-    // Auto-fly to user location when it becomes available
     watch(() => props.userLocation, (loc) => {
-      if (loc && loc.lat != null && loc.lng != null && !hasFlownToUser) {
-        hasFlownToUser = true;
+      if (loc && loc.lat != null && loc.lng != null) {
         nextTick(() => {
           isFlyingToSelected = true;
           map.flyTo([loc.lat, loc.lng], 8, { duration: 1.5 });
@@ -410,10 +400,6 @@ export default {
         });
       }
     }, { immediate: false });
-
-    // ============================================================
-    // Lifecycle
-    // ============================================================
 
     onMounted(() => {
       initMap();
@@ -434,7 +420,6 @@ export default {
       if (map) { map.remove(); map = null; }
     });
 
-    // Expose flyToLocation as public method
     return { mapContainer, flyToLocation };
   },
 };

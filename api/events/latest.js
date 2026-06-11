@@ -8,7 +8,6 @@
  *   ?min_magnitude=5  - Filter by minimum magnitude (optional)
  *   ?limit=50         - Limit number of results (optional)
  *   ?include_phivolcs=true - Also include PHIVOLCS data (default: true)
- *   ?phivolcs_url=... - PHIVOLCS scraper URL (default: self)
  */
 
 import { fetchLatestEvents, simplifyEvent } from '../_lib/usgs.js';
@@ -33,10 +32,20 @@ function isWithinPhilippines(lat, lon) {
  * Falls back gracefully if the scraper is unavailable.
  */
 async function fetchPHIVOLCSData() {
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : process.env.VERCEL_BRANCH_URL
+      ? `https://${process.env.VERCEL_BRANCH_URL}`
+      : null;
+
+  if (!baseUrl) {
+    console.warn('[events/latest] No VERCEL_URL available, skipping PHIVOLCS');
+    return [];
+  }
+
   try {
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3000';
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 10000);
 
     const response = await fetch(
       `${baseUrl}/api/scrape-phivolcs`,
@@ -45,9 +54,11 @@ async function fetchPHIVOLCSData() {
           'Authorization': `Bearer ${process.env.CRON_SECRET || ''}`,
           'Accept': 'application/json',
         },
-        timeout: 10000,
+        signal: abortController.signal,
       }
     );
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       console.warn(`[events/latest] PHIVOLCS scraper returned ${response.status}`);
@@ -57,7 +68,11 @@ async function fetchPHIVOLCSData() {
     const data = await response.json();
     return data.earthquakes || [];
   } catch (err) {
-    console.warn('[events/latest] PHIVOLCS fetch failed (non-fatal):', err.message);
+    if (err.name === 'AbortError') {
+      console.warn('[events/latest] PHIVOLCS scraper timed out');
+    } else {
+      console.warn('[events/latest] PHIVOLCS fetch failed (non-fatal):', err.message);
+    }
     return [];
   }
 }
@@ -106,9 +121,26 @@ export default async function handler(req, res) {
       );
 
       for (const phEvent of phivolcsEvents) {
-        const key = `${phEvent.latitude?.toFixed(1)},${phEvent.longitude?.toFixed(1)}`;
-        if (!existingKeys.has(key) && phEvent.magnitude >= minMagnitude) {
-          events.push(phEvent);
+        const mag = parseFloat(phEvent.magnitude || 0);
+        const key = `${parseFloat(phEvent.latitude || 0).toFixed(1)},${parseFloat(phEvent.longitude || 0).toFixed(1)}`;
+        if (!existingKeys.has(key) && mag >= minMagnitude) {
+          events.push({
+            id: phEvent.id || `ph-${Date.now()}-${Math.random()}`,
+            eventId: phEvent.id || '',
+            magnitude: mag,
+            place: phEvent.place || 'Philippines',
+            time: parseInt(phEvent.time || Date.now(), 10),
+            depth: parseFloat(phEvent.depth || 0),
+            latitude: parseFloat(phEvent.latitude || 0),
+            longitude: parseFloat(phEvent.longitude || 0),
+            source: 'PHIVOLCS',
+            url: '',
+            felt: 0,
+            mmi: null,
+            alert: null,
+            tsunami: 0,
+            sig: 0,
+          });
           existingKeys.add(key);
         }
       }
