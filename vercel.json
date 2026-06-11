@@ -4,12 +4,10 @@
   "framework": "vite",
   "functions": {
     "api/**/*.js": {
-      "maxDuration": 30,
-      "runtime": "nodejs20.x"
+      "maxDuration": 30
     },
     "api/cron/scrape-phivolcs.py": {
-      "maxDuration": 30,
-      "runtime": "python3.9"
+      "maxDuration": 30
     }
   },
   "rewrites": [
