@@ -1,120 +1,69 @@
 """
-Python serverless function to scrape PHIVOLCS earthquake data.
-Runs on Vercel with the Python runtime.
-
-Endpoint: GET /api/scrape-phivolcs
+Scrape PHIVOLCS earthquake data from the official website.
+Endpoint: GET /api/scrape-phivolcs (also accepts POST)
 Protected by: Authorization: Bearer <CRON_SECRET>
 
 Returns JSON:
-  { "last_updated": "2026-06-11T...", "earthquakes": [...], "count": N }
+{
+  "last_updated": "2026-06-11T12:34:56",
+  "count": 5,
+  "earthquakes": [ { "date_time": "...", "magnitude": "4.2", ... } ]
+}
 """
 
 import os
 import json
 import re
-import html
 from datetime import datetime
 
-try:
-    import requests
-    from bs4 import BeautifulSoup
-except ImportError:
-    pass
+import requests
+from bs4 import BeautifulSoup
 
 
-PH_MIN_LAT = 4.5
-PH_MAX_LAT = 21.5
-PH_MIN_LON = 116.5
-PH_MAX_LON = 126.5
+def handler(request, response):
+    """
+    Vercel Python serverless function entry point.
+    """
+    # --- 1. Authorization check ---
+    secret = os.environ.get('CRON_SECRET')
+    auth_header = request.headers.get('authorization', '')
 
-PHIVOLCS_URL = "https://earthquake.phivolcs.dost.gov.ph/"
+    if not secret:
+        response.status_code = 500
+        return response.json({
+            'error': 'CRON_SECRET environment variable not set'
+        })
 
+    expected = f"Bearer {secret}"
+    if auth_header != expected:
+        response.status_code = 401
+        return response.json({'error': 'Unauthorized'})
 
-def is_within_philippines(lat, lon):
-    if lat is None or lon is None:
-        return False
-    return (PH_MIN_LAT <= lat <= PH_MAX_LAT and
-            PH_MIN_LON <= lon <= PH_MAX_LON)
-
-
-def parse_phivolcs_date(date_str):
-    if not date_str:
-        return int(datetime.now().timestamp() * 1000)
-
-    date_str = date_str.strip()
-
-    formats = [
-        "%d %b %Y %I:%M %p",
-        "%d %B %Y %I:%M %p",
-        "%m/%d/%Y %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%d %b %Y - %I:%M %p",
-        "%d %B %Y - %I:%M %p",
-    ]
-
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(date_str, fmt)
-            return int(dt.timestamp() * 1000)
-        except ValueError:
-            continue
-
-    match = re.search(r'(\d{1,2})\s+(\w+)\s+(\d{4})', date_str)
-    if match:
-        day, month_str, year = match.groups()
-        month_map = {
-            'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
-            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
-            'january': 1, 'february': 2, 'march': 3, 'april': 4, 'june': 6,
-            'july': 7, 'august': 8, 'september': 9, 'october': 10,
-            'november': 11, 'december': 12,
+    # --- 2. Scrape PHIVOLCS data ---
+    try:
+        earthquakes = scrape_phivolcs()
+        result = {
+            'last_updated': datetime.now().isoformat(),
+            'count': len(earthquakes),
+            'earthquakes': earthquakes
         }
-        month = month_map.get(month_str.lower(), 1)
-        return int(datetime(int(year), month, int(day)).timestamp() * 1000)
+        response.status_code = 200
+        return response.json(result)
 
-    return int(datetime.now().timestamp() * 1000)
-
-
-def parse_coordinates(coord_str):
-    if not coord_str:
-        return None, None
-
-    coord_str = coord_str.strip()
-
-    pattern = r'([\d.]+)°?\s*([NSEW])'
-    matches = re.findall(pattern, coord_str, re.IGNORECASE)
-
-    lat = None
-    lon = None
-
-    for value, direction in matches:
-        val = float(value)
-        if direction.upper() in ('N', 'S'):
-            lat = val if direction.upper() == 'N' else -val
-        elif direction.upper() in ('E', 'W'):
-            lon = val if direction.upper() == 'E' else -val
-
-    if lat is None and lon is None:
-        parts = re.findall(r'[\d.]+', coord_str)
-        if len(parts) >= 2:
-            lat = float(parts[0])
-            lon = float(parts[1])
-
-    return lat, lon
-
-
-def parse_depth(depth_str):
-    if not depth_str:
-        return 0
-
-    depth_str = depth_str.strip()
-    match = re.search(r'([\d.]+)', depth_str)
-    if match:
-        return float(match.group(1))
-    return 0
+    except requests.exceptions.RequestException as e:
+        response.status_code = 502
+        return response.json({'error': f'Failed to fetch PHIVOLCS page: {str(e)}'})
+    except Exception as e:
+        response.status_code = 500
+        return response.json({'error': f'Scraping failed: {str(e)}'})
 
 
 def scrape_phivolcs():
+    """
+    Fetch and parse earthquake data from PHIVOLCS website.
+    Returns a list of earthquake dictionaries.
+    """
+    url = "https://earthquake.phivolcs.dost.gov.ph/"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                       'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -123,202 +72,104 @@ def scrape_phivolcs():
         'Accept-Language': 'en-US,en;q=0.9',
     }
 
-    response = requests.get(PHIVOLCS_URL, headers=headers, timeout=30)
+    response = requests.get(url, headers=headers, timeout=30)
     response.raise_for_status()
     response.encoding = 'utf-8'
 
     soup = BeautifulSoup(response.text, 'html.parser')
     earthquakes = []
 
+    # --- Strategy 1: Find a table that looks like earthquake data ---
     tables = soup.find_all('table')
     for table in tables:
+        # Check if this table contains typical earthquake columns
+        header_row = table.find('tr')
+        if not header_row:
+            continue
+        header_text = header_row.get_text().lower()
+        if not any(kw in header_text for kw in ['magnitude', 'mag', 'depth', 'location']):
+            continue
+
         rows = table.find_all('tr')
         if len(rows) < 2:
             continue
 
-        header_text = table.get_text().lower()
-        if not any(kw in header_text for kw in ['magnitude', 'mag', 'depth',
-                                                  'location', 'lat', 'time']):
-            continue
-
-        header_cells = rows[0].find_all(['th', 'td'])
+        # Identify column indices
+        cols = header_row.find_all(['th', 'td'])
         col_map = {}
-        for i, cell in enumerate(header_cells):
+        for idx, cell in enumerate(cols):
             text = cell.get_text().strip().lower()
-            if any(kw in text for kw in ['mag', 'magnitude']):
-                col_map['magnitude'] = i
-            elif any(kw in text for kw in ['depth']):
-                col_map['depth'] = i
-            elif any(kw in text for kw in ['lat', 'latitude']):
-                col_map['latitude'] = i
-            elif any(kw in text for kw in ['lon', 'long']):
-                col_map['longitude'] = i
-            elif any(kw in text for kw in ['location', 'place', 'origin']):
-                col_map['place'] = i
-            elif any(kw in text for kw in ['date', 'time', 'date/time']):
-                col_map['time'] = i
-            elif any(kw in text for kw in ['coordinates', 'coord']):
-                col_map['coordinates'] = i
+            if 'date' in text or 'time' in text:
+                col_map['date_time'] = idx
+            elif 'magnitude' in text or 'mag' in text:
+                col_map['magnitude'] = idx
+            elif 'depth' in text:
+                col_map['depth'] = idx
+            elif 'location' in text or 'place' in text:
+                col_map['location'] = idx
+            elif 'map' in text or 'link' in text:
+                col_map['map_link'] = idx
 
-        if 'magnitude' not in col_map:
-            continue
-
-        for row in rows[1:]:
-            cells = row.find_all(['td', 'th'])
-            if len(cells) < 2:
-                continue
-
-            event = {
-                'id': f"phivolcs-{len(earthquakes)}-{datetime.now().timestamp()}",
-                'source': 'PHIVOLCS',
-                'magnitude': 0,
-                'place': '',
-                'depth': 0,
-                'latitude': None,
-                'longitude': None,
-                'time': int(datetime.now().timestamp() * 1000),
-            }
-
-            for field, idx in col_map.items():
-                if idx < len(cells):
-                    text = cells[idx].get_text().strip()
-                    text = html.unescape(text)
-
-                    if field == 'magnitude':
-                        try:
-                            event['magnitude'] = float(re.search(r'[\d.]+', text).group())
-                        except (AttributeError, ValueError):
-                            event['magnitude'] = 0
-                    elif field == 'depth':
-                        event['depth'] = parse_depth(text)
-                    elif field == 'place':
-                        event['place'] = text
-                    elif field == 'time':
-                        parsed = parse_phivolcs_date(text)
-                        event['time'] = parsed
-                    elif field == 'coordinates':
-                        lat, lon = parse_coordinates(text)
-                        event['latitude'] = lat
-                        event['longitude'] = lon
-                    elif field == 'latitude':
-                        try:
-                            event['latitude'] = float(re.search(r'[\d.]+', text).group())
-                        except (AttributeError, ValueError):
-                            pass
-                    elif field == 'longitude':
-                        try:
-                            event['longitude'] = float(re.search(r'[\d.]+', text).group())
-                        except (AttributeError, ValueError):
-                            pass
-
-            event_id_str = f"ph-{event['time']}-{event['magnitude']}-{event['latitude'] or 0}-{event['longitude'] or 0}"
-            event['id'] = event_id_str
-
-            lat = event['latitude']
-            lon = event['longitude']
-            if lat is not None and lon is not None:
-                if not is_within_philippines(lat, lon):
+        # If we have at least magnitude and location, parse rows
+        if 'magnitude' in col_map and 'location' in col_map:
+            for row in rows[1:]:
+                cells = row.find_all('td')
+                if len(cells) < max(col_map.values()) + 1:
                     continue
 
-            if event['magnitude'] > 0 and event['place']:
-                earthquakes.append(event)
-
-        if earthquakes:
-            break
-
-    if not earthquakes:
-        items = soup.select('.earthquake-item, .eq-item, .quake-item, '
-                            '[class*="earthquake"], [class*="eq-list"]')
-        for item in items:
-            text = item.get_text()
-
-            mag_match = re.search(r'mag[\s:]*([\d.]+)', text, re.IGNORECASE)
-            depth_match = re.search(r'depth[\s:]*([\d.]+)', text, re.IGNORECASE)
-            coord_match = re.search(r'([\d.]+)°?\s*[NnSs],?\s*([\d.]+)°?\s*[EeWw]', text)
-
-            mag = float(mag_match.group(1)) if mag_match else 0
-            depth = float(depth_match.group(1)) if depth_match else 0
-            lat, lon = None, None
-            if coord_match:
-                lat = float(coord_match.group(1))
-                lon = float(coord_match.group(2))
-
-            if lat is not None and lon is not None:
-                if not is_within_philippines(lat, lon):
-                    continue
-
-            if mag > 0:
                 event = {
-                    'id': f"ph-{datetime.now().timestamp()}-{mag}",
-                    'source': 'PHIVOLCS',
-                    'magnitude': mag,
-                    'place': text[:100].replace('\n', ' ').strip(),
-                    'depth': depth,
-                    'latitude': lat,
-                    'longitude': lon,
-                    'time': int(datetime.now().timestamp() * 1000),
+                    'date_time': cells[col_map.get('date_time', 0)].get_text(strip=True) if 'date_time' in col_map else '',
+                    'magnitude': cells[col_map['magnitude']].get_text(strip=True),
+                    'depth': cells[col_map.get('depth', 0)].get_text(strip=True) if 'depth' in col_map else '',
+                    'location': cells[col_map['location']].get_text(strip=True),
+                    'map_link': ''
                 }
-                earthquakes.append(event)
+                if 'map_link' in col_map:
+                    link_tag = cells[col_map['map_link']].find('a')
+                    if link_tag and link_tag.get('href'):
+                        event['map_link'] = link_tag['href']
+
+                # Only add if magnitude looks like a number
+                if re.search(r'[\d.]+', event['magnitude']):
+                    earthquakes.append(event)
+            break   # Stop after first valid table
+
+    # --- Strategy 2: If no structured table, look for earthquake items in divs ---
+    if not earthquakes:
+        # Look for divs that contain "magnitude" and "depth"
+        potential_divs = soup.find_all('div', class_=re.compile(r'earthquake|eq|quake', re.I))
+        if not potential_divs:
+            potential_divs = soup.find_all('div', string=re.compile(r'magnitude', re.I))
+        for div in potential_divs:
+            text = div.get_text()
+            mag_match = re.search(r'magnitude\s*[:;]\s*([\d.]+)', text, re.I)
+            depth_match = re.search(r'depth\s*[:;]\s*([\d.]+)', text, re.I)
+            loc_match = re.search(r'location\s*[:;]\s*(.*?)(?:\n|$)', text, re.I)
+            if mag_match:
+                earthquakes.append({
+                    'date_time': '',
+                    'magnitude': mag_match.group(1),
+                    'depth': depth_match.group(1) if depth_match else '',
+                    'location': loc_match.group(1).strip() if loc_match else text[:100],
+                    'map_link': ''
+                })
+
+    # --- Strategy 3: Fallback to raw text parsing (very last resort) ---
+    if not earthquakes:
+        body_text = soup.get_text()
+        # Look for earthquake report blocks (commonly appear as numbered lists)
+        blocks = re.split(r'\n\d+\.\s+', body_text)
+        for block in blocks:
+            mag = re.search(r'Magnitude\s*[:;]\s*([\d.]+)', block, re.I)
+            loc = re.search(r'Location\s*[:;]\s*([^\n]+)', block, re.I)
+            depth = re.search(r'Depth\s*[:;]\s*([\d.]+)', block, re.I)
+            if mag:
+                earthquakes.append({
+                    'date_time': '',
+                    'magnitude': mag.group(1),
+                    'depth': depth.group(1) if depth else '',
+                    'location': loc.group(1).strip() if loc else block[:80],
+                    'map_link': ''
+                })
 
     return earthquakes
-
-
-from http.server import BaseHTTPRequestHandler
-
-
-class handler(BaseHTTPRequestHandler):
-    """Vercel Python serverless function handler."""
-
-    def do_GET(self):
-        self._handle_request()
-
-    def do_POST(self):
-        self._handle_request()
-
-    def _handle_request(self):
-        secret = os.environ.get('CRON_SECRET', '')
-        auth_header = self.headers.get('Authorization', '') if self.headers else ''
-
-        if not secret:
-            self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                'error': 'CRON_SECRET not configured',
-            }).encode())
-            return
-
-        expected = f"Bearer {secret}"
-        if auth_header != expected:
-            self.send_response(401)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': 'Unauthorized'}).encode())
-            return
-
-        try:
-            earthquakes = scrape_phivolcs()
-            earthquakes.sort(key=lambda e: e.get('time', 0), reverse=True)
-
-            result = {
-                'last_updated': datetime.now().isoformat(),
-                'count': len(earthquakes),
-                'earthquakes': earthquakes,
-            }
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
-
-        except requests.exceptions.RequestException as e:
-            self.send_response(502)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': f'Fetch failed: {str(e)}'}).encode())
-        except Exception as e:
-            self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': f'Scraping failed: {str(e)}'}).encode())
