@@ -199,6 +199,9 @@ export default {
               <button class="popup-btn felt-btn-popup" data-event-id="${event.id}">
                 I felt it
               </button>
+              <button class="popup-btn timeline-btn" data-event-id="${event.id}">
+                📊 Shaking Timeline
+              </button>
             </div>
           </div>
         `;
@@ -214,8 +217,9 @@ export default {
             if (!popupEl) return;
 
             const handleClick = (e) => {
-              const shakeBtn = e.target.closest('.shake-btn');
+            const shakeBtn = e.target.closest('.shake-btn');
               const feltBtn = e.target.closest('.felt-btn-popup');
+              const timelineBtn = e.target.closest('.timeline-btn');
 
               if (shakeBtn) {
                 e.stopPropagation();
@@ -226,6 +230,10 @@ export default {
                 emit('select-event', feltBtn.dataset.eventId);
                 marker.closePopup();
                 document.dispatchEvent(new CustomEvent('show-felt-dialog'));
+              } else if (timelineBtn) {
+                e.stopPropagation();
+                marker.closePopup();
+                document.dispatchEvent(new CustomEvent('open-shaking-timeline', { detail: timelineBtn.dataset.eventId }));
               }
             };
 

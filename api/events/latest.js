@@ -1,9 +1,13 @@
 /**
  * GET /api/events/latest
+ *
  * Proxies USGS earthquake feed, filtered to Philippines only.
+ * PHIVOLCS data is handled client-side to avoid Python runtime issues.
  */
+
 import { fetchLatestEvents, simplifyEvent } from '../_lib/usgs.js';
 
+// Philippines bounding box
 const PH_MIN_LAT = 4.5;
 const PH_MAX_LAT = 21.5;
 const PH_MIN_LON = 116.5;
@@ -38,10 +42,13 @@ export default async function handler(req, res) {
     console.log(`[events/latest] Fetching USGS feed: ${feed}`);
 
     const rawData = await fetchLatestEvents(feed);
+
     let events = rawData.features.map(simplifyEvent);
 
     // Filter to Philippines only
     events = events.filter((e) => isWithinPhilippines(e.latitude, e.longitude));
+
+    // Mark source
     events.forEach((e) => { e.source = e.source || 'USGS'; });
 
     if (minMagnitude > 0) {
@@ -68,9 +75,11 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error('[events/latest] Error:', err.message);
-    res.status(502).json({
-      error: 'Failed to fetch earthquake data',
-      details: err.message,
+    // Return empty list instead of crashing
+    res.status(200).json({
+      type: 'FeatureCollection',
+      metadata: { generated: Date.now(), count: 0, feed, region: 'Philippines', error: err.message },
+      events: [],
     });
   }
 }

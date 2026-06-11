@@ -118,6 +118,15 @@
       @reset-dates="resetDates"
     />
 
+    <!-- Shaking Timeline -->
+    <ShakingTimeline
+      v-if="showTimeline && selectedEvent"
+      :event="selectedEvent"
+      :user-distance="userDistance"
+      :user-location="userLocation"
+      @close="showTimeline = false"
+    />
+
     <!-- "I Felt It" dialog -->
     <div v-if="showFeltDialog && selectedEvent" class="felt-dialog-overlay" @click.self="showFeltDialog = false">
       <div class="felt-dialog">
@@ -146,13 +155,14 @@ import { ref, onMounted, watch } from 'vue';
 import MapView from './components/MapView.vue';
 import Sidebar from './components/Sidebar.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
+import ShakingTimeline from './components/ShakingTimeline.vue';
 import * as api from './lib/api.js';
 import { getDeviceId } from './lib/device.js';
 import { cacheEvents, loadCachedEvents, cacheShakeMap, loadCachedShakeMap, onNetworkChange } from './lib/cache.js';
 
 export default {
   name: 'App',
-  components: { MapView, Sidebar, SettingsPanel },
+  components: { MapView, Sidebar, SettingsPanel, ShakingTimeline },
 
   setup() {
     // ============================================================
@@ -175,6 +185,8 @@ export default {
     const showFeltDialog = ref(false);
     const isOffline = ref(false);
     const hasPHIVOLCS = ref(false);
+    const showTimeline = ref(false);
+    const userDistance = ref(null);
 
     // Settings
     const minMagnitude = ref(4.5);
@@ -257,6 +269,57 @@ export default {
       error.value = null;
     }
 
+    /**
+     * Generate approximate ShakeMap intensity zones based on magnitude and depth.
+     * Uses concentric circles with MMi labels.
+     */
+    function generateApproximateShakeMap(event) {
+      const mag = event.magnitude || 0;
+      const depth = (event.depth || 10) * 1000; // Convert km to meters for attenuation
+      const lat = event.latitude;
+      const lng = event.longitude;
+
+      if (!lat || !lng || mag < 4) return null;
+
+      const features = [];
+      const radiiKm = [10, 20, 40, 80, 120, 180, 250, 350];
+      const mmis = [8, 7, 6, 5, 4, 3, 2, 1];
+
+      for (let i = 0; i < radiiKm.length; i++) {
+        const radiusKm = radiiKm[i];
+        // Check if this MMI level would be felt at this distance given magnitude
+        const expectedMmi = Math.min(10, Math.max(1, Math.round(mag * 1.5 - Math.log10(depth + 1) * 2 - radiusKm / 30)));
+
+        if (expectedMmi < 1) continue;
+
+        const radiusM = radiusKm * 1000;
+        const points = [];
+        const segments = 32;
+
+        for (let j = 0; j <= segments; j++) {
+          const angle = (j / segments) * 2 * Math.PI;
+          const dLat = (radiusM / 111320) * Math.cos(angle);
+          const dLng = (radiusM / (111320 * Math.cos(lat * Math.PI / 180))) * Math.sin(angle);
+          points.push([lng + dLng, lat + dLat]);
+        }
+
+        features.push({
+          type: 'Feature',
+          properties: { MMI: expectedMmi, label: `${expectedMmi}` },
+          geometry: {
+            type: 'Polygon',
+            coordinates: [points],
+          },
+        });
+      }
+
+      return {
+        type: 'FeatureCollection',
+        metadata: { generated: true, eventName: event.place },
+        features,
+      };
+    }
+
     async function selectEvent(eventId) {
       selectedEventId.value = eventId;
       selectedEvent.value = events.value.find((e) => e.id === eventId) || null;
@@ -288,6 +351,14 @@ export default {
         } catch (err) {
           console.warn('[App] Could not load ShakeMap:', err.message);
           // Keep cached contours if fetch failed
+        }
+
+        // If no contours available, generate approximate intensity zones
+        if (!shakemapContours.value && selectedEvent.value) {
+          const approximateContours = generateApproximateShakeMap(selectedEvent.value);
+          if (approximateContours) {
+            shakemapContours.value = approximateContours;
+          }
         }
       }
     }
@@ -432,6 +503,33 @@ export default {
       loadEvents();
     }
 
+    /**
+     * Open the Shaking Timeline panel for the currently selected event.
+     * Computes the Haversine distance from the user to the epicenter.
+     */
+    function openTimeline() {
+      if (!selectedEvent.value) {
+        alert('Select an earthquake first.');
+        return;
+      }
+      const loc = userLocation.value;
+      if (!loc || loc.lat == null || loc.lng == null) {
+        alert('Enable location access to compute your distance to the epicenter.');
+        return;
+      }
+      const R = 6371;
+      const toRad = (d) => (d * Math.PI) / 180;
+      const lat1 = toRad(loc.lat);
+      const lat2 = toRad(selectedEvent.value.latitude);
+      const dLat = toRad(selectedEvent.value.latitude - loc.lat);
+      const dLng = toRad(selectedEvent.value.longitude - loc.lng);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      userDistance.value = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      showTimeline.value = true;
+    }
+
     // Listen for custom events
     function setupCustomEvents() {
       document.addEventListener('show-felt-dialog', () => {
@@ -439,10 +537,15 @@ export default {
       });
 
       // Jump to location handler
-      window.addEventListener('jump-to-location', (e) => {
-        // Will be handled by MapView if we refactor to use a method
-        // For now, just re-trigger geolocation
+      window.addEventListener('jump-to-location', () => {
         getUserLocation();
+      });
+
+      // Open shaking timeline from MapView popup
+      document.addEventListener('open-shaking-timeline', (e) => {
+        const eventId = e.detail;
+        if (eventId) selectEvent(eventId);
+        openTimeline();
       });
 
       // Network status changes
@@ -512,6 +615,8 @@ export default {
       dateTo,
       isOffline,
       hasPHIVOLCS,
+      showTimeline,
+      userDistance,
       refreshData,
       selectEvent,
       togglePush,
@@ -523,6 +628,7 @@ export default {
       jumpToMyLocation,
       shareEvent,
       resetDates,
+      openTimeline,
     };
   },
 };

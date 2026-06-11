@@ -1,42 +1,41 @@
 /**
  * Database connection helper for Vercel serverless functions.
  * Uses @vercel/postgres for connection pooling.
+ * Supports Neon URL format (postgresql:// → postgres:// conversion).
  */
 
 import { createPool } from '@vercel/postgres';
-import { sql } from '@vercel/postgres';
 
 let pool = null;
 
 /**
- * Get or create a database connection pool.
- * In Vercel serverless environment, we reuse the connection across invocations.
+ * Normalize DATABASE_URL for Vercel Neon compatibility.
+ * Neon uses postgresql:// but @vercel/postgres expects postgres://.
  */
+function normalizeConnectionString(url) {
+  if (!url) return url;
+  let normalized = url;
+  if (normalized.startsWith('postgresql://')) {
+    normalized = 'postgres://' + normalized.slice('postgresql://'.length);
+  }
+  if (!normalized.includes('-pooler')) {
+    console.warn('[DB] WARNING: DATABASE_URL does not contain "-pooler". Use Neon pooled URL.');
+  }
+  return normalized;
+}
+
 export async function getDb() {
   if (!pool) {
     const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error('DATABASE_URL environment variable is not set');
-    }
-    pool = createPool({ connectionString });
+    if (!connectionString) throw new Error('DATABASE_URL not set');
+    pool = createPool({ connectionString: normalizeConnectionString(connectionString) });
   }
   return pool;
 }
 
-/**
- * Execute a raw SQL query with parameters.
- */
 export async function query(text, params = []) {
   const db = await getDb();
-  const result = await db.query(text, params);
-  return result;
+  return await db.query(text, params);
 }
 
-/**
- * Get the @vercel/postgres sql tagged template literal helper.
- */
-export function getSql() {
-  return sql;
-}
-
-export default { getDb, query, getSql };
+export default { getDb, query };

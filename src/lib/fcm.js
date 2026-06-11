@@ -25,9 +25,23 @@ function getFirebaseConfig() {
 
   if (!configStr) {
     console.warn(
-      '[FCM] VITE_FIREBASE_CONFIG not set. Push notifications unavailable.',
+      '[FCM] VITE_FIREBASE_CONFIG not set. Trying fallback config...',
       'Set VITE_FIREBASE_CONFIG as a JSON string in your .env or Vercel env vars.'
     );
+    // Fallback: try to build config from individual env vars
+    const fallback = {
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
+      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+      appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
+    };
+    if (fallback.apiKey && fallback.projectId) {
+      console.log('[FCM] Using fallback config. Project:', fallback.projectId);
+      return fallback;
+    }
+    console.error('[FCM] No Firebase config available. Push notifications will not work.');
     return null;
   }
 
@@ -37,7 +51,6 @@ function getFirebaseConfig() {
     return parsed;
   } catch (err) {
     console.error('[FCM] Failed to parse VITE_FIREBASE_CONFIG:', err.message);
-    console.error('[FCM] Config string starts with:', configStr.substring(0, 50) + '...');
     return null;
   }
 }
