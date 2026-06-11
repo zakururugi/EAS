@@ -3,6 +3,8 @@
     <div class="sidebar-header">
       <h2>Earthquakes</h2>
       <span class="count-badge">{{ sortedEvents.length }}</span>
+      <span v-if="offline" class="offline-badge" title="Showing cached data">📡 Offline</span>
+      <span v-if="hasPHIVOLCS" class="phivolcs-badge" title="Includes PHIVOLCS data">PH</span>
     </div>
 
     <!-- Sort controls -->
@@ -31,33 +33,48 @@
 
     <!-- Event list -->
     <div class="events-list" ref="listContainer">
-      <div
-        v-for="event in sortedEvents"
-        :key="event.id"
-        :class="['event-card', { selected: event.id === selectedEventId }]"
-        @click="$emit('select-event', event.id)"
-      >
-        <div class="event-mag" :style="{ background: getMagColor(event.magnitude) }">
-          M{{ event.magnitude?.toFixed(1) || '?' }}
-        </div>
-        <div class="event-info">
-          <div class="event-place" :title="event.place">{{ event.place || 'Unknown' }}</div>
-          <div class="event-meta">
-            <span class="event-time">{{ formatTime(event.time) }}</span>
-            <span class="event-depth">{{ event.depth?.toFixed(1) || '?' }} km</span>
-            <span v-if="event.felt" class="event-felt">👤 {{ event.felt }}</span>
-            <span v-if="event.mmi" class="event-mmi">MMI {{ event.mmi }}</span>
-            <span v-if="event.tsunami" class="event-tsunami">🌊</span>
-          </div>
-          <div v-if="event.distance != null" class="event-distance">
-            {{ event.distance.toFixed(0) }} km away
+      <!-- Skeleton loader -->
+      <template v-if="loading">
+        <div v-for="n in 6" :key="'skeleton-' + n" class="event-card skeleton-card">
+          <div class="skeleton skeleton-mag"></div>
+          <div class="event-info">
+            <div class="skeleton skeleton-place"></div>
+            <div class="skeleton skeleton-meta"></div>
           </div>
         </div>
-      </div>
+      </template>
 
-      <div v-if="sortedEvents.length === 0" class="empty-state">
-        <p>No earthquakes found</p>
-      </div>
+      <!-- Real events -->
+      <template v-else>
+        <div
+          v-for="event in sortedEvents"
+          :key="event.id"
+          :class="['event-card', { selected: event.id === selectedEventId }]"
+          @click="$emit('select-event', event.id)"
+        >
+          <div class="event-mag" :style="{ background: getMagColor(event.magnitude) }">
+            M{{ event.magnitude?.toFixed(1) || '?' }}
+          </div>
+          <div class="event-info">
+            <div class="event-place" :title="event.place">{{ event.place || 'Unknown' }}</div>
+            <div class="event-meta">
+              <span class="event-time">{{ formatTime(event.time) }}</span>
+              <span class="event-depth">{{ event.depth?.toFixed(1) || '?' }} km</span>
+              <span v-if="event.source" class="event-source">{{ event.source }}</span>
+              <span v-if="event.felt" class="event-felt">👤 {{ event.felt }}</span>
+              <span v-if="event.mmi" class="event-mmi">MMI {{ event.mmi }}</span>
+              <span v-if="event.tsunami" class="event-tsunami">🌊</span>
+            </div>
+            <div v-if="event.distance != null" class="event-distance">
+              {{ event.distance.toFixed(0) }} km away
+            </div>
+          </div>
+        </div>
+
+        <div v-if="sortedEvents.length === 0" class="empty-state">
+          <p>No earthquakes found</p>
+        </div>
+      </template>
     </div>
   </aside>
 </template>
@@ -94,6 +111,9 @@ export default {
     selectedEventId: { type: String, default: null },
     userLocation: { type: Object, default: null },
     sortBy: { type: String, default: 'time' },
+    loading: { type: Boolean, default: false },
+    offline: { type: Boolean, default: false },
+    hasPHIVOLCS: { type: Boolean, default: false },
   },
   emits: ['select-event', 'update:sort-by'],
 
@@ -133,17 +153,14 @@ export default {
       const now = new Date();
       const diff = now - date;
 
-      // Within last hour: show minutes ago
       if (diff < 3600000) {
         const mins = Math.floor(diff / 60000);
         return `${mins}m ago`;
       }
-      // Within last 24 hours: show hours ago
       if (diff < 86400000) {
         const hours = Math.floor(diff / 3600000);
         return `${hours}h ago`;
       }
-      // Otherwise: show date
       return date.toLocaleDateString(undefined, {
         month: 'short',
         day: 'numeric',
@@ -324,5 +341,67 @@ export default {
   height: 120px;
   color: #8892b0;
   font-size: 14px;
+}
+
+/* Skeleton loader */
+.skeleton-card {
+  cursor: default !important;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #1a1a2e 25%, #233554 50%, #1a1a2e 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-mag {
+  width: 52px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.skeleton-place {
+  height: 14px;
+  width: 180px;
+  margin-bottom: 6px;
+}
+
+.skeleton-meta {
+  height: 11px;
+  width: 120px;
+}
+
+/* Badges */
+.offline-badge {
+  background: rgba(255, 152, 0, 0.15);
+  color: #ff9800;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.phivolcs-badge {
+  background: rgba(100, 255, 218, 0.15);
+  color: #64ffda;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.event-source {
+  background: rgba(100, 255, 218, 0.1);
+  color: #64ffda;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
 }
 </style>

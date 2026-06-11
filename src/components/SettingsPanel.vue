@@ -68,6 +68,44 @@
       </section>
 
       <!-- ============================================ -->
+      <!-- Date Range Filter -->
+      <!-- ============================================ -->
+      <section class="setting-section">
+        <h3>Date Range</h3>
+        <p class="setting-desc">
+          Filter earthquakes by date (uses USGS FDSN query when dates are set).
+        </p>
+        <div class="date-range-group">
+          <div class="date-field">
+            <label>From</label>
+            <input
+              type="date"
+              :value="dateFrom"
+              @input="$emit('update:date-from', $event.target.value)"
+              class="date-input"
+            />
+          </div>
+          <div class="date-field">
+            <label>To</label>
+            <input
+              type="date"
+              :value="dateTo"
+              @input="$emit('update:date-to', $event.target.value)"
+              class="date-input"
+            />
+          </div>
+          <div class="date-actions">
+            <button class="settings-btn primary" @click="$emit('apply-dates')" :disabled="!dateFrom && !dateTo">
+              Apply
+            </button>
+            <button class="settings-btn secondary" @click="$emit('reset-dates')" :disabled="!dateFrom && !dateTo">
+              Reset
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================ -->
       <!-- Watch Zones -->
       <!-- ============================================ -->
       <section class="setting-section">
@@ -132,8 +170,19 @@ export default {
     watchZones: { type: Array, default: () => [] },
     vapidKey: { type: String, default: '' },
     fcmStatus: { type: String, default: 'idle' },
+    dateFrom: { type: String, default: '' },
+    dateTo: { type: String, default: '' },
   },
-  emits: ['update:min-magnitude', 'toggle-push', 'delete-zone', 'close'],
+  emits: [
+    'update:min-magnitude',
+    'toggle-push',
+    'delete-zone',
+    'close',
+    'update:date-from',
+    'update:date-to',
+    'apply-dates',
+    'reset-dates',
+  ],
 };
 </script>
 
@@ -418,6 +467,83 @@ h3 {
 .delete-zone-btn:hover {
   color: #ff1744;
   background: rgba(255, 23, 68, 0.1);
+}
+
+/* Date Range */
+.date-range-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.date-field label {
+  font-size: 11px;
+  color: #8892b0;
+  font-weight: 500;
+}
+
+.date-input {
+  background: #0f0f23;
+  border: 1px solid #233554;
+  color: #ccd6f6;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  color-scheme: dark;
+}
+
+.date-input:focus {
+  border-color: #64ffda;
+}
+
+.date-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.settings-btn {
+  flex: 1;
+  padding: 7px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-btn.primary {
+  background: #64ffda;
+  color: #0f0f23;
+}
+
+.settings-btn.primary:hover:not(:disabled) {
+  background: #45e0be;
+}
+
+.settings-btn.secondary {
+  background: transparent;
+  color: #8892b0;
+  border: 1px solid #233554;
+}
+
+.settings-btn.secondary:hover:not(:disabled) {
+  border-color: #64ffda;
+  color: #64ffda;
+}
+
+.settings-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* About section */

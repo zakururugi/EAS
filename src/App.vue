@@ -9,24 +9,29 @@
       :shakemap-contours="shakemapContours"
       :loading="loading"
       :error="error"
+      :user-location="userLocation"
       @select-event="selectEvent"
       @zone-created="onZoneCreated"
       @zone-deleted="onZoneDeleted"
     />
 
-    <!-- Loading Overlay -->
-    <div v-if="loading" class="loading-overlay">
+    <!-- Loading overlay (subtle map spinner) -->
+    <div v-if="loading" class="map-loading-spinner">
       <div class="spinner"></div>
-      <span>Loading earthquake data...</span>
     </div>
 
     <!-- Error Banner -->
     <div v-if="error" class="error-banner">
       <span>⚠️ {{ error }}</span>
-      <button @click="error = null; loadEvents()" class="retry-btn">Retry</button>
+      <button @click="dismissError(); loadEvents()" class="retry-btn">Retry</button>
     </div>
 
-    <!-- Sidebar Toggle Button -->
+    <!-- Offline Banner -->
+    <div v-if="isOffline" class="offline-banner">
+      📡 You are offline — showing cached data
+    </div>
+
+    <!-- Sidebar Toggle -->
     <button
       class="sidebar-toggle"
       @click="showSidebar = !showSidebar"
@@ -36,7 +41,7 @@
       <span v-else>✕</span>
     </button>
 
-    <!-- Settings Toggle Button -->
+    <!-- Settings Toggle -->
     <button
       class="settings-toggle"
       @click="showSettings = !showSettings"
@@ -55,9 +60,29 @@
       {{ refreshing ? '⟳' : '↻' }}
     </button>
 
+    <!-- Jump to My Location Button -->
+    <button
+      class="locate-btn"
+      @click="jumpToMyLocation"
+      title="Jump to my location"
+    >
+      📍
+    </button>
+
+    <!-- Share Button (appears when an event is selected) -->
+    <button
+      v-if="selectedEvent"
+      class="share-btn"
+      @click="shareEvent"
+      title="Share this earthquake"
+    >
+      ↗
+    </button>
+
     <!-- Last Updated -->
     <div class="last-updated">
       Last updated: {{ lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '--' }}
+      <span v-if="hasPHIVOLCS" class="ph-source-indicator">+PHIVOLCS</span>
     </div>
 
     <!-- Sidebar -->
@@ -67,6 +92,9 @@
       :selected-event-id="selectedEventId"
       :user-location="userLocation"
       :sort-by="sortBy"
+      :loading="sidebarLoading"
+      :offline="isOffline"
+      :has-phivolcs="hasPHIVOLCS"
       @select-event="selectEvent"
       @update:sort-by="sortBy = $event"
     />
@@ -79,9 +107,15 @@
       :watch-zones="watchZones"
       :vapid-key="vapidKey"
       :fcm-status="fcmStatus"
+      :date-from="dateFrom"
+      :date-to="dateTo"
       @update:min-magnitude="minMagnitude = $event"
       @toggle-push="togglePush"
       @delete-zone="onZoneDeleted"
+      @update:date-from="dateFrom = $event"
+      @update:date-to="dateTo = $event"
+      @apply-dates="loadEvents"
+      @reset-dates="resetDates"
     />
 
     <!-- "I Felt It" dialog -->
@@ -108,12 +142,14 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import MapView from './components/MapView.vue';
 import Sidebar from './components/Sidebar.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import * as api from './lib/api.js';
 import { getDeviceId } from './lib/device.js';
+import { fetchPHIVOLCSEarthquakes } from './lib/phivolcs.js';
+import { cacheEvents, loadCachedEvents, cacheShakeMap, loadCachedShakeMap, isOnline, onNetworkChange } from './lib/cache.js';
 
 export default {
   name: 'App',
@@ -128,51 +164,116 @@ export default {
     const selectedEvent = ref(null);
     const shakemapContours = ref(null);
     const loading = ref(true);
+    const sidebarLoading = ref(true);
     const error = ref(null);
     const refreshing = ref(false);
     const lastUpdated = ref(null);
     const showSidebar = ref(true);
     const showSettings = ref(false);
-    const sortBy = ref('time'); // 'time' | 'magnitude' | 'distance'
+    const sortBy = ref('time');
     const userLocation = ref(null);
     const showFeltDialog = ref(false);
+    const isOffline = ref(false);
+    const hasPHIVOLCS = ref(false);
 
     // Settings
     const minMagnitude = ref(4.5);
     const pushEnabled = ref(false);
     const watchZones = ref([]);
-    const fcmStatus = ref('idle'); // 'idle' | 'loading' | 'granted' | 'denied' | 'error'
+    const fcmStatus = ref('idle');
+    const dateFrom = ref('');
+    const dateTo = ref('');
 
     const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY || '';
+
+    // ============================================================
+    // Hash-based routing for shareable links
+    // ============================================================
+    function handleHashChange() {
+      const hash = window.location.hash;
+      if (hash && hash.startsWith('#/event/')) {
+        const eventId = hash.replace('#/event/', '');
+        if (eventId) {
+          selectEvent(eventId);
+        }
+      }
+    }
 
     // ============================================================
     // Methods
     // ============================================================
 
-    /**
-     * Load earthquake events from the API.
-     */
     async function loadEvents() {
       try {
         loading.value = true;
+        sidebarLoading.value = true;
         error.value = null;
 
-        const data = await api.fetchLatestEvents({ limit: 100 });
-        events.value = data.events || [];
-        lastUpdated.value = data.metadata?.generated || Date.now();
+        // Fetch USGS data
+        const usgsPromise = api.fetchLatestEvents({
+          minMagnitude: minMagnitude.value,
+          limit: 100,
+        });
 
-        console.log(`[App] Loaded ${events.value.length} events`);
+        // Fetch PHIVOLCS data (parallel)
+        let phivolcsData = [];
+        try {
+          phivolcsData = await fetchPHIVOLCSEarthquakes();
+          hasPHIVOLCS.value = phivolcsData.length > 0;
+        } catch (phErr) {
+          console.warn('[App] PHIVOLCS fetch failed (non-fatal):', phErr.message);
+          phivolcsData = [];
+          hasPHIVOLCS.value = false;
+        }
+
+        // Wait for USGS
+        const usgsData = await usgsPromise;
+        let allEvents = usgsData.events || [];
+
+        // Merge PHIVOLCS data, deduplicate by location proximity
+        if (phivolcsData.length > 0) {
+          const existingKeys = new Set(allEvents.map((e) =>
+            `${e.latitude?.toFixed(1)},${e.longitude?.toFixed(1)}`
+          ));
+
+          for (const phEvent of phivolcsData) {
+            const key = `${phEvent.latitude?.toFixed(1)},${phEvent.longitude?.toFixed(1)}`;
+            if (!existingKeys.has(key) && phEvent.magnitude >= minMagnitude.value) {
+              allEvents.push(phEvent);
+              existingKeys.add(key);
+            }
+          }
+        }
+
+        // Sort by time descending
+        allEvents.sort((a, b) => b.time - a.time);
+
+        events.value = allEvents;
+        lastUpdated.value = Date.now();
+
+        // Cache events for offline
+        cacheEvents(allEvents);
+
+        console.log(`[App] Loaded ${allEvents.length} events (${phivolcsData.length} from PHIVOLCS)`);
       } catch (err) {
         console.error('[App] Failed to load events:', err.message);
         error.value = err.message;
+
+        // Try loading from cache if offline
+        if (!navigator.onLine) {
+          const cached = await loadCachedEvents();
+          if (cached.length > 0) {
+            events.value = cached;
+            isOffline.value = true;
+            error.value = null; // Clear error since we have cached data
+          }
+        }
       } finally {
         loading.value = false;
+        sidebarLoading.value = false;
       }
     }
 
-    /**
-     * Refresh data (manual refresh).
-     */
     async function refreshData() {
       if (refreshing.value) return;
       refreshing.value = true;
@@ -180,33 +281,48 @@ export default {
       refreshing.value = false;
     }
 
-    /**
-     * Select an earthquake event and optionally load ShakeMap contours.
-     */
+    function dismissError() {
+      error.value = null;
+    }
+
     async function selectEvent(eventId) {
       selectedEventId.value = eventId;
       selectedEvent.value = events.value.find((e) => e.id === eventId) || null;
       shakemapContours.value = null;
 
+      // Update URL hash for shareable links
       if (eventId) {
+        window.location.hash = `#/event/${eventId}`;
+      } else {
+        window.location.hash = '';
+      }
+
+      if (eventId) {
+        // First try loading from cache
+        let contours = await loadCachedShakeMap(eventId);
+        if (contours) {
+          shakemapContours.value = contours;
+        }
+
+        // Then fetch fresh data
         try {
           const detail = await api.fetchEventDetails(eventId);
           if (detail.hasShakeMap) {
-            const contours = await api.fetchEventContours(eventId);
-            shakemapContours.value = contours;
+            const freshContours = await api.fetchEventContours(eventId);
+            shakemapContours.value = freshContours;
+            // Cache it
+            cacheShakeMap(eventId, freshContours);
           }
         } catch (err) {
           console.warn('[App] Could not load ShakeMap:', err.message);
+          // Keep cached contours if fetch failed
         }
       }
     }
 
-    /**
-     * Get user's current location (browser geolocation).
-     */
     function getUserLocation() {
       if (!navigator.geolocation) {
-        console.log('[App] Geolocation not supported');
+        userLocation.value = { lat: 12.8797, lng: 121.7740 }; // Default to Philippines
         return;
       }
 
@@ -216,27 +332,57 @@ export default {
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
           };
-          console.log('[App] User location:', userLocation.value);
         },
-        (err) => {
-          console.log('[App] Geolocation error:', err.message);
-          // Default to [0, 0] as specified
-          userLocation.value = { lat: 0, lng: 0 };
+        () => {
+          userLocation.value = { lat: 12.8797, lng: 121.7740 }; // Default to Philippines
         },
         { enableHighAccuracy: false, timeout: 10000 }
       );
     }
 
-    /**
-     * Save minMagnitude to localStorage.
-     */
+    function jumpToMyLocation() {
+      if (userLocation.value) {
+        // Emit to map via a custom event the MapView can listen to
+        // The map component will handle the flyTo via its own prop
+        window.dispatchEvent(new CustomEvent('jump-to-location', {
+          detail: userLocation.value,
+        }));
+      } else {
+        getUserLocation();
+      }
+    }
+
+    async function shareEvent() {
+      if (!selectedEvent.value) return;
+
+      const shareUrl = `${window.location.origin}/#/event/${selectedEvent.value.id}`;
+      const shareData = {
+        title: `M${selectedEvent.value.magnitude?.toFixed(1)} Earthquake at ${selectedEvent.value.place}`,
+        text: `M${selectedEvent.value.magnitude?.toFixed(1)} earthquake at ${selectedEvent.value.place}. Depth: ${selectedEvent.value.depth?.toFixed(1)}km.`,
+        url: shareUrl,
+      };
+
+      if (navigator.share) {
+        try {
+          await navigator.share(shareData);
+        } catch {
+          // User cancelled
+        }
+      } else {
+        // Fallback: copy to clipboard
+        try {
+          await navigator.clipboard.writeText(shareUrl);
+          alert('Link copied to clipboard!');
+        } catch {
+          prompt('Copy this link:', shareUrl);
+        }
+      }
+    }
+
     watch(minMagnitude, (val) => {
       localStorage.setItem('quake_min_magnitude', String(val));
     });
 
-    /**
-     * Push notification toggle.
-     */
     async function togglePush(enabled) {
       if (enabled) {
         fcmStatus.value = 'loading';
@@ -262,15 +408,10 @@ export default {
           fcmStatus.value = 'error';
         }
       } else {
-        // Unsubscribe
         try {
           const token = localStorage.getItem('quake_fcm_token');
-          if (token) {
-            await api.unsubscribePush(token);
-          }
-        } catch (err) {
-          console.warn('[App] Unsubscribe failed:', err.message);
-        }
+          if (token) await api.unsubscribePush(token);
+        } catch { /* ignore */ }
         pushEnabled.value = false;
         fcmStatus.value = 'idle';
         localStorage.setItem('quake_push_enabled', 'false');
@@ -278,22 +419,14 @@ export default {
       }
     }
 
-    /**
-     * Load watch zones from API.
-     */
     async function loadZones() {
       try {
         const deviceId = getDeviceId();
         const data = await api.fetchZones(deviceId);
         watchZones.value = data.zones || [];
-      } catch (err) {
-        console.warn('[App] Failed to load watch zones:', err.message);
-      }
+      } catch { /* ignore */ }
     }
 
-    /**
-     * Called when a zone is created via Leaflet.draw.
-     */
     async function onZoneCreated(polygon) {
       try {
         const deviceId = getDeviceId();
@@ -305,32 +438,51 @@ export default {
         });
         await loadZones();
       } catch (err) {
-        console.error('[App] Failed to create zone:', err.message);
         error.value = 'Failed to save watch zone: ' + err.message;
       }
     }
 
-    /**
-     * Called when a zone is deleted.
-     */
     async function onZoneDeleted(zoneId) {
       try {
         await api.deleteZone(zoneId);
         await loadZones();
-      } catch (err) {
-        console.error('[App] Failed to delete zone:', err.message);
-      }
+      } catch { /* ignore */ }
     }
 
-    /**
-     * "I felt it" - placeholder for USGS DYFI.
-     */
     function submitFeltReport(intensity) {
-      console.log(`[App] Felt report: M${selectedEvent.value?.magnitude} at ` +
-        `${selectedEvent.value?.place}, intensity=${intensity}`);
+      console.log(`[App] Felt report: M${selectedEvent.value?.magnitude} at ${selectedEvent.value?.place}, intensity=${intensity}`);
       showFeltDialog.value = false;
-      // In production, redirect to USGS DYFI page:
-      // window.open(`https://earthquake.usgs.gov/earthquakes/eventpage/${eventId}/dyfi`, '_blank');
+    }
+
+    function resetDates() {
+      dateFrom.value = '';
+      dateTo.value = '';
+      loadEvents();
+    }
+
+    // Listen for custom events
+    function setupCustomEvents() {
+      document.addEventListener('show-felt-dialog', () => {
+        showFeltDialog.value = true;
+      });
+
+      // Jump to location handler
+      window.addEventListener('jump-to-location', (e) => {
+        // Will be handled by MapView if we refactor to use a method
+        // For now, just re-trigger geolocation
+        getUserLocation();
+      });
+
+      // Network status changes
+      const cleanup = onNetworkChange(
+        () => {
+          isOffline.value = false;
+          loadEvents(); // Reload when back online
+        },
+        () => {
+          isOffline.value = true;
+        }
+      );
     }
 
     // ============================================================
@@ -338,15 +490,23 @@ export default {
     // ============================================================
 
     onMounted(async () => {
-      // Restore settings from localStorage
+      // Restore settings
       const savedMag = localStorage.getItem('quake_min_magnitude');
       if (savedMag) minMagnitude.value = parseFloat(savedMag);
-
       const savedPush = localStorage.getItem('quake_push_enabled');
       pushEnabled.value = savedPush === 'true';
 
-      getDeviceId(); // Ensure device ID is created
+      // Check initial online status
+      isOffline.value = !navigator.onLine;
+
+      getDeviceId();
       getUserLocation();
+      setupCustomEvents();
+
+      // Check hash for direct event link
+      handleHashChange();
+      window.addEventListener('hashchange', handleHashChange);
+
       await loadEvents();
       await loadZones();
 
@@ -362,6 +522,7 @@ export default {
       selectedEvent,
       shakemapContours,
       loading,
+      sidebarLoading,
       error,
       refreshing,
       lastUpdated,
@@ -375,20 +536,27 @@ export default {
       fcmStatus,
       vapidKey: VAPID_KEY,
       showFeltDialog,
+      dateFrom,
+      dateTo,
+      isOffline,
+      hasPHIVOLCS,
       refreshData,
       selectEvent,
       togglePush,
       onZoneCreated,
       onZoneDeleted,
       submitFeltReport,
+      dismissError,
       loadEvents,
+      jumpToMyLocation,
+      shareEvent,
+      resetDates,
     };
   },
 };
 </script>
 
 <style>
-/* Global styles scoped to App */
 .app-container {
   width: 100%;
   height: 100vh;
@@ -396,27 +564,27 @@ export default {
   overflow: hidden;
 }
 
-/* Loading overlay */
-.loading-overlay {
+/* Map loading spinner (subtle, on map only) */
+.map-loading-spinner {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(15, 15, 35, 0.7);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 1000;
-  gap: 12px;
-  backdrop-filter: blur(2px);
+  background: rgba(26, 26, 46, 0.8);
+  padding: 8px 16px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #8892b0;
 }
 
 .spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid rgba(255, 255, 255, 0.1);
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
   border-top-color: #64ffda;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -457,10 +625,26 @@ export default {
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* Offline banner */
+.offline-banner {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 152, 0, 0.9);
+  color: #fff;
+  padding: 6px 16px;
+  border-radius: 8px;
+  z-index: 1000;
+  font-size: 13px;
+}
+
 /* Floating action buttons */
 .sidebar-toggle,
 .settings-toggle,
-.refresh-btn {
+.refresh-btn,
+.locate-btn,
+.share-btn {
   position: absolute;
   z-index: 1000;
   width: 40px;
@@ -480,25 +664,18 @@ export default {
 
 .sidebar-toggle:hover,
 .settings-toggle:hover,
-.refresh-btn:hover {
+.refresh-btn:hover,
+.locate-btn:hover,
+.share-btn:hover {
   background: #16213e;
   transform: scale(1.05);
 }
 
-.sidebar-toggle {
-  top: 16px;
-  left: 16px;
-}
-
-.settings-toggle {
-  top: 16px;
-  right: 16px;
-}
-
-.refresh-btn {
-  top: 16px;
-  right: 68px;
-}
+.sidebar-toggle { top: 16px; left: 16px; }
+.settings-toggle { top: 16px; right: 16px; }
+.refresh-btn { top: 16px; right: 68px; }
+.locate-btn { top: 64px; right: 16px; }
+.share-btn { top: 112px; right: 16px; }
 
 .refresh-btn:disabled {
   opacity: 0.5;
@@ -516,9 +693,21 @@ export default {
   border-radius: 4px;
   font-size: 11px;
   z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-/* "I felt it" dialog */
+.ph-source-indicator {
+  background: rgba(100, 255, 218, 0.1);
+  color: #64ffda;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* Felt dialog */
 .felt-dialog-overlay {
   position: fixed;
   inset: 0;

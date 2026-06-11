@@ -11,17 +11,17 @@ import 'leaflet-draw';
  * Get color based on earthquake magnitude.
  */
 function getMagColor(mag) {
-  if (mag >= 7) return '#ff1744';   // Major - Red
-  if (mag >= 6) return '#ff6d00';   // Strong - Orange
-  if (mag >= 5) return '#ffd600';   // Moderate - Yellow
-  return '#00e676';                  // Light - Green
+  if (mag >= 7) return '#ff1744';
+  if (mag >= 6) return '#ff6d00';
+  if (mag >= 5) return '#ffd600';
+  return '#00e676';
 }
 
 /**
  * Get circle radius based on magnitude.
  */
 function getMagRadius(mag) {
-  return Math.max(8, Math.min(40, mag * 6));
+  return Math.max(12, Math.min(48, mag * 6));
 }
 
 export default {
@@ -33,6 +33,7 @@ export default {
     shakemapContours: { type: Object, default: null },
     loading: Boolean,
     error: String,
+    userLocation: { type: Object, default: null },
   },
   emits: ['select-event', 'zone-created', 'zone-deleted'],
 
@@ -44,8 +45,11 @@ export default {
     let zonesLayerGroup = null;
     let drawnItems = null;
     let drawControl = null;
+    let isFlyingToSelected = false;
+    let resizeObserver = null;
+    let legendControl = null;
+    let magnitudeLegendControl = null;
 
-    // Tile layer URL with dark theme
     const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
     const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
 
@@ -60,25 +64,22 @@ export default {
         zoom: 2,
         zoomControl: true,
         attributionControl: true,
+        trackResize: false,
       });
 
-      // Add dark tile layer
       L.tileLayer(TILE_URL, {
         attribution: TILE_ATTR,
         maxZoom: 19,
         subdomains: 'abcd',
       }).addTo(map);
 
-      // Initialize feature groups
       eventLayerGroup = L.featureGroup().addTo(map);
       shakemapLayerGroup = L.featureGroup().addTo(map);
       zonesLayerGroup = L.featureGroup().addTo(map);
 
-      // Initialize drawn items for Leaflet.draw
       drawnItems = new L.FeatureGroup();
       map.addLayer(drawnItems);
 
-      // Add draw control
       drawControl = new L.Control.Draw({
         position: 'topright',
         draw: {
@@ -105,49 +106,68 @@ export default {
       });
       map.addControl(drawControl);
 
-      // Handle draw events
       map.on(L.Draw.Event.CREATED, (event) => {
         const layer = event.layer;
-
         if (event.layerType === 'polygon') {
-          // Extract polygon coordinates as [lon, lat] pairs
           const latlngs = layer.getLatLngs()[0];
           const coordinates = latlngs.map((ll) => [ll.lng, ll.lat]);
-
-          // Style the drawn polygon
           layer.setStyle({
             color: '#64ffda',
             weight: 2,
             opacity: 0.8,
             fillOpacity: 0.15,
           });
-
           drawnItems.addLayer(layer);
           emit('zone-created', coordinates);
         }
       });
 
-      map.on(L.Draw.Event.DELETED, () => {
-        // The deleted event fires but doesn't tell us which layer was removed
-        // We'll handle zone deletion from the settings panel
-      });
-
-      // Handle map click to deselect
       map.on('click', () => {
         if (props.selectedEventId) {
           emit('select-event', null);
         }
       });
 
-      // Fit world bounds
       map.fitWorld();
-
-      // Invalidate size after mount
       setTimeout(() => map.invalidateSize(), 100);
+
+      // ResizeObserver for proper map resizing
+      if (window.ResizeObserver) {
+        resizeObserver = new ResizeObserver(() => {
+          if (map) map.invalidateSize();
+        });
+        resizeObserver.observe(mapContainer.value);
+      }
     }
 
     /**
-     * Render earthquake epicenters as circles on the map.
+     * Create a custom divIcon showing magnitude number inside a colored circle.
+     */
+    function createMagMarker(event, isSelected) {
+      const mag = event.magnitude || 0;
+      const color = getMagColor(mag);
+      const radius = getMagRadius(mag);
+      const size = radius * 2;
+      const fontSize = Math.max(11, Math.min(16, radius * 0.55));
+
+      return L.divIcon({
+        className: 'mag-marker',
+        html: `<div class="mag-marker-inner" style="
+          width:${size}px; height:${size}px;
+          background:${color};
+          border:${isSelected ? '3px solid #ffffff' : '2px solid rgba(255,255,255,0.7)'};
+          box-shadow:${isSelected ? '0 0 12px rgba(100,255,218,0.6)' : '0 0 4px rgba(0,0,0,0.5)'};
+          font-size:${fontSize}px;
+          line-height:${size}px;
+        ">${mag.toFixed(1)}</div>`,
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2],
+        popupAnchor: [0, -size / 2],
+      });
+    }
+
+    /**
+     * Render earthquake epicenters using custom divIcon markers.
      */
     function renderEvents() {
       if (!eventLayerGroup) return;
@@ -159,24 +179,16 @@ export default {
         if (!event.latitude || !event.longitude) return;
 
         const isSelected = event.id === props.selectedEventId;
-        const color = getMagColor(event.magnitude);
-        const radius = getMagRadius(event.magnitude);
-
-        const circle = L.circleMarker([event.latitude, event.longitude], {
-          radius,
-          fillColor: color,
-          color: isSelected ? '#ffffff' : color,
-          weight: isSelected ? 3 : 1.5,
-          opacity: 0.9,
-          fillOpacity: isSelected ? 0.9 : 0.5,
+        const marker = L.marker([event.latitude, event.longitude], {
+          icon: createMagMarker(event, isSelected),
+          riseOnHover: true,
         });
 
-        // Format time
         const timeStr = event.time
           ? new Date(event.time).toLocaleString()
           : 'Unknown';
+        const color = getMagColor(event.magnitude);
 
-        // Create popup content
         const popupContent = `
           <div class="quake-popup">
             <div class="popup-header" style="color:${color}; font-weight:bold; font-size:16px;">
@@ -200,56 +212,68 @@ export default {
           </div>
         `;
 
-        circle.bindPopup(popupContent, {
+        marker.bindPopup(popupContent, {
           maxWidth: 320,
           className: 'quake-popup-container',
         });
 
-        // Handle popup open events for button clicks
-        circle.on('popupopen', () => {
-          // Defer: wait for popup DOM to render
+        // Popup event binding using document-level delegation to avoid stale listeners
+        let popupHandlerAttached = false;
+
+        marker.on('popupopen', () => {
+          if (popupHandlerAttached) return;
+          popupHandlerAttached = true;
+
+          // Use a small delay and add one-time delegated listeners
           setTimeout(() => {
-            const shakeBtn = document.querySelector('.shake-btn');
-            const feltBtn = document.querySelector('.felt-btn-popup');
+            const popupEl = marker.getPopup()?.getElement();
+            if (!popupEl) return;
 
-            if (shakeBtn) {
-              shakeBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const eventId = e.target.dataset.eventId;
-                emit('select-event', eventId);
-                circle.closePopup();
-              });
-            }
+            const handleShakeClick = (e) => {
+              const btn = e.target.closest('.shake-btn');
+              if (!btn) return;
+              e.stopPropagation();
+              emit('select-event', btn.dataset.eventId);
+              marker.closePopup();
+            };
 
-            if (feltBtn) {
-              feltBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const eventId = e.target.dataset.eventId;
-                emit('select-event', eventId);
-                circle.closePopup();
-                // Tell App to show felt dialog
-                // We emit a custom event that App can listen to
-                document.dispatchEvent(new CustomEvent('show-felt-dialog'));
-              });
-            }
+            const handleFeltClick = (e) => {
+              const btn = e.target.closest('.felt-btn-popup');
+              if (!btn) return;
+              e.stopPropagation();
+              emit('select-event', btn.dataset.eventId);
+              marker.closePopup();
+              document.dispatchEvent(new CustomEvent('show-felt-dialog'));
+            };
+
+            popupEl.addEventListener('click', handleShakeClick);
+            popupEl.addEventListener('click', handleFeltClick);
+
+            // Clean up on popup close
+            marker.on('popupclose', () => {
+              popupEl.removeEventListener('click', handleShakeClick);
+              popupEl.removeEventListener('click', handleFeltClick);
+              popupHandlerAttached = false;
+            }, { once: true });
           }, 50);
         });
 
-        // Click also selects
-        circle.on('click', () => {
+        marker.on('click', () => {
           emit('select-event', event.id);
         });
 
-        eventLayerGroup.addLayer(circle);
+        eventLayerGroup.addLayer(marker);
       });
 
-      // If an event is selected, fly to it
-      if (props.selectedEventId) {
-        const selectedEvent = props.events.find((e) => e.id === props.selectedEventId);
-        if (selectedEvent && selectedEvent.latitude && selectedEvent.longitude) {
-          map.flyTo([selectedEvent.latitude, selectedEvent.longitude], 6, {
+      // Fly to selected event with loop protection
+      if (props.selectedEventId && !isFlyingToSelected) {
+        const selEvent = props.events.find((e) => e.id === props.selectedEventId);
+        if (selEvent && selEvent.latitude && selEvent.longitude) {
+          isFlyingToSelected = true;
+          map.flyTo([selEvent.latitude, selEvent.longitude], Math.min(map.getZoom(), 6), {
             duration: 1,
           });
+          setTimeout(() => { isFlyingToSelected = false; }, 1200);
         }
       }
     }
@@ -260,21 +284,15 @@ export default {
     function renderShakeMap() {
       if (!shakemapLayerGroup) return;
       shakemapLayerGroup.clearLayers();
-
       if (!props.shakemapContours) return;
 
       const data = props.shakemapContours;
-
-      // Check if it's a FeatureCollection
       const features = data.features || [];
 
       if (features.length === 0) {
-        // Maybe it's a single geometry or different format
         if (data.geometry) {
           try {
-            const layer = L.geoJSON(data, {
-              style: getContourStyle,
-            });
+            const layer = L.geoJSON(data, { style: getContourStyle });
             shakemapLayerGroup.addLayer(layer);
           } catch (err) {
             console.warn('[MapView] Could not parse ShakeMap geometry:', err.message);
@@ -283,7 +301,6 @@ export default {
         return;
       }
 
-      // Parse contour features (MMI polygons/lines)
       const contourLayer = L.geoJSON(data, {
         style: getContourStyle,
         onEachFeature: (feature, layer) => {
@@ -300,7 +317,6 @@ export default {
 
       shakemapLayerGroup.addLayer(contourLayer);
 
-      // Zoom to fit contours if we have any
       if (contourLayer.getBounds().isValid()) {
         map.fitBounds(contourLayer.getBounds(), {
           padding: [50, 50],
@@ -311,7 +327,6 @@ export default {
 
     /**
      * Style function for ShakeMap contour features.
-     * Color by MMI intensity value.
      */
     function getContourStyle(feature) {
       const mmi = feature?.properties?.MMI ||
@@ -331,7 +346,7 @@ export default {
                         feature?.geometry?.type === 'MultiPolygon';
 
       return {
-        color: color,
+        color,
         weight: isPolygon ? 1 : 2,
         opacity: 0.6,
         fillColor: color,
@@ -345,13 +360,10 @@ export default {
     function renderZones() {
       if (!zonesLayerGroup) return;
       zonesLayerGroup.clearLayers();
-
       if (!props.watchZones || props.watchZones.length === 0) return;
 
       props.watchZones.forEach((zone) => {
         if (!zone.polygon || zone.polygon.length < 3) return;
-
-        // Convert [lon, lat] to [lat, lng] for Leaflet
         const latlngs = zone.polygon.map(([lon, lat]) => [lat, lon]);
 
         const polygon = L.polygon(latlngs, {
@@ -372,12 +384,31 @@ export default {
       });
     }
 
-    /**
-     * Add ShakeMap legend to the map.
-     */
+    // ============================================================
+    // Magnitude legend (always visible)
+    // ============================================================
+    const magLegend = {
+      onAdd() {
+        const div = L.DomUtil.create('div', 'map-legend mag-legend');
+        div.innerHTML = `
+          <div class="legend-title">Magnitude</div>
+          <div class="legend-items">
+            <div class="legend-item"><span style="background:#ff1744"></span> ≥ 7.0</div>
+            <div class="legend-item"><span style="background:#ff6d00"></span> 6.0 – 6.9</div>
+            <div class="legend-item"><span style="background:#ffd600"></span> 5.0 – 5.9</div>
+            <div class="legend-item"><span style="background:#00e676"></span> 4.5 – 4.9</div>
+          </div>
+        `;
+        return div;
+      },
+    };
+
+    // ============================================================
+    // ShakeMap MMI legend
+    // ============================================================
     const shakemapLegend = {
       onAdd() {
-        const div = L.DomUtil.create('div', 'shakemap-legend');
+        const div = L.DomUtil.create('div', 'map-legend shakemap-legend');
         div.innerHTML = `
           <div class="legend-title">MMI Intensity</div>
           <div class="legend-items">
@@ -387,14 +418,12 @@ export default {
             <div class="legend-item"><span style="background:#ff9900"></span> VII</div>
             <div class="legend-item"><span style="background:#ff6600"></span> VIII</div>
             <div class="legend-item"><span style="background:#ff3300"></span> IX</div>
-            <div class="legend-item"><span style="background:#ff0000"></span> X</div>
+            <div class="legend-item"><span style="background:#ff0000"></span> X+</div>
           </div>
         `;
         return div;
       },
     };
-
-    let legendControl = null;
 
     // ============================================================
     // Watchers
@@ -412,7 +441,6 @@ export default {
       nextTick(() => {
         renderShakeMap();
 
-        // Add/remove legend
         if (props.shakemapContours && !legendControl) {
           legendControl = L.control({ position: 'bottomright' });
           legendControl.onAdd = shakemapLegend.onAdd;
@@ -435,7 +463,11 @@ export default {
     onMounted(() => {
       initMap();
 
-      // When map is ready, wait for next tick and render
+      // Add permanent magnitude legend
+      magnitudeLegendControl = L.control({ position: 'bottomright' });
+      magnitudeLegendControl.onAdd = magLegend.onAdd;
+      magnitudeLegendControl.addTo(map);
+
       nextTick(() => {
         renderEvents();
         renderZones();
@@ -443,6 +475,13 @@ export default {
     });
 
     onBeforeUnmount(() => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
+      if (magnitudeLegendControl && map) {
+        map.removeControl(magnitudeLegendControl);
+      }
       if (map) {
         map.remove();
         map = null;
@@ -463,6 +502,28 @@ export default {
   position: absolute;
   top: 0;
   left: 0;
+}
+
+/* Custom magnitude markers */
+.mag-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.mag-marker-inner {
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: #000;
+  text-shadow: 0 0 2px rgba(255,255,255,0.3);
+  transition: transform 0.15s, box-shadow 0.15s;
+  cursor: pointer;
+}
+
+.mag-marker-inner:hover {
+  transform: scale(1.15);
 }
 
 /* Popup styling */
@@ -502,41 +563,47 @@ export default {
   background: #2e4a6b;
 }
 
-/* ShakeMap legend */
-.shakemap-legend {
-  background: rgba(26, 26, 46, 0.9);
-  padding: 8px 12px;
-  border-radius: 6px;
+/* Unified legend styling */
+.map-legend {
+  background: rgba(15, 15, 35, 0.92);
+  padding: 10px 14px;
+  border-radius: 8px;
   border: 1px solid #233554;
   font-size: 12px;
   color: #ccd6f6;
+  backdrop-filter: blur(4px);
+  margin-bottom: 6px;
 }
 
 .legend-title {
   font-weight: bold;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
   color: #64ffda;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 .legend-items {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 11px;
 }
 
 .legend-item span {
   display: inline-block;
-  width: 14px;
-  height: 14px;
-  border-radius: 2px;
-  border: 1px solid rgba(255,255,255,0.1);
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.15);
+  flex-shrink: 0;
 }
 
 /* ShakeMap tooltip */
@@ -557,7 +624,7 @@ export default {
   padding: 4px 8px !important;
 }
 
-/* Leaflet draw overrides for dark theme */
+/* Leaflet draw overrides */
 .leaflet-draw-toolbar a {
   background-color: #1a1a2e !important;
   background-image: url('https://unpkg.com/leaflet-draw@1.0.4/dist/images/spritesheet.png') !important;
