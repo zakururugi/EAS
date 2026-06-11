@@ -1,18 +1,22 @@
 /**
  * GET /api/events/latest
  *
- * Returns earthquakes from USGS (filtered to Philippines) and PHIVOLCS (community API).
+ * Returns earthquakes from USGS (filtered to Philippines) and PHIVOLCS (official RSS feed).
  * Merges both sources, deduplicates by location (within ~0.5° lat/lon).
- * Falls back gracefully if PHIVOLCS API fails.
+ * Falls back gracefully if PHIVOLCS feed fails.
  */
 
 import { fetchLatestEvents, simplifyEvent } from '../_lib/usgs.js';
+import Parser from 'rss-parser';
 
 // Philippines bounding box
 const PH_MIN_LAT = 4.5;
 const PH_MAX_LAT = 21.5;
 const PH_MIN_LON = 116.5;
 const PH_MAX_LON = 126.5;
+
+const PHIVOLCS_RSS_URL = 'https://earthquake.phivolcs.dost.gov.ph/feed_rss.xml';
+const RSS_PARSER = new Parser();
 
 function isWithinPhilippines(lat, lon) {
   if (lat == null || lon == null) return false;
@@ -21,68 +25,63 @@ function isWithinPhilippines(lat, lon) {
 }
 
 /**
- * Fetch PHIVOLCS earthquakes from the community API.
- * Returns an array of events in the same format as USGS, or empty array on error.
+ * Fetch PHIVOLCS earthquakes from the official RSS feed.
+ * Returns an array of events in the same format as USGS.
  */
 async function fetchPHIVOLCSEvents() {
-  const PHIVOLCS_API = 'https://incident-ph-api.onrender.com/api/phivolcs/earthquakes';
   try {
-    const response = await fetch(PHIVOLCS_API, {
-      headers: { 'User-Agent': 'EarthquakeAlertSystem/1.0' },
-      timeout: 5000,
-    });
-    if (!response.ok) return [];
+    const feed = await RSS_PARSER.parseURL(PHIVOLCS_RSS_URL);
+    const items = feed.items || [];
 
-    const data = await response.json();
-    let items = [];
-
-    // Handle different response structures
-    if (Array.isArray(data)) items = data;
-    else if (data.earthquakes && Array.isArray(data.earthquakes)) items = data.earthquakes;
-    else if (data.data && Array.isArray(data.data)) items = data.data;
-    else return [];
-
-    // Convert to USGS-like format
     return items.map(item => {
-      const props = item.properties || item;
-      const coords = item.geometry?.coordinates || [];
-      let lat, lon, depth;
+      // Example title: "Magnitude 4.2, 018 km N 71° W of Nasugbu (Batangas)"
+      const titleMatch = item.title?.match(/Magnitude ([\d.]+), (.+)/i);
+      const magnitude = titleMatch ? parseFloat(titleMatch[1]) : 0;
+      const location = titleMatch ? titleMatch[2].trim() : item.title || 'Philippines';
 
-      if (coords.length >= 2) {
-        lon = coords[0];
-        lat = coords[1];
-        depth = coords[2] || 0;
-      } else {
-        lat = parseFloat(props.latitude || props.lat || 0);
-        lon = parseFloat(props.longitude || props.lng || 0);
-        depth = parseFloat(props.depth || 0);
+      // Extract coordinates from description if available
+      let lat = null, lon = null;
+      const desc = item.description || '';
+      const latMatch = desc.match(/Latitude:\s*([\d.]+)/i);
+      const lonMatch = desc.match(/Longitude:\s*([\d.]+)/i);
+      if (latMatch && lonMatch) {
+        lat = parseFloat(latMatch[1]);
+        lon = parseFloat(lonMatch[1]);
+      }
+
+      // Parse publication date
+      let timestamp = Date.now();
+      if (item.pubDate) {
+        try {
+          timestamp = new Date(item.pubDate).getTime();
+        } catch (e) { /* keep default */ }
       }
 
       return {
-        id: String(props.id || props.event_id || `ph-${Date.now()}-${Math.random()}`),
-        eventId: String(props.id || props.event_id || ''),
-        magnitude: parseFloat(props.magnitude || props.mag || 0),
-        place: props.place || props.location || props.region || 'Philippines',
-        time: parseInt(props.time || props.timestamp || props.date_time || Date.now(), 10),
-        updated: parseInt(props.updated || Date.now(), 10),
-        depth,
+        id: `ph-${item.guid || item.link || timestamp}-${magnitude}`,
+        eventId: item.guid || item.link || '',
+        magnitude,
+        place: location,
+        time: timestamp,
+        updated: timestamp,
+        depth: 0,                       // RSS does not provide depth reliably
         latitude: lat,
         longitude: lon,
-        url: props.url || '',
-        felt: parseInt(props.felt || 0, 10),
-        mmi: props.mmi || null,
-        source: 'PHIVOLCS',
+        url: item.link || '',
+        felt: 0,
+        mmi: null,
+        source: 'PHIVOLCS'
       };
     }).filter(e => e.magnitude > 0 && isWithinPhilippines(e.latitude, e.longitude));
   } catch (err) {
-    console.error('[events/latest] PHIVOLCS fetch failed:', err.message);
+    console.error('[events/latest] PHIVOLCS RSS fetch failed:', err.message);
     return [];
   }
 }
 
 /**
  * Deduplicate events from USGS and PHIVOLCS by proximity (within ~0.5° lat/lon).
- * Prefers USGS if both exist for the same location (USGS usually has more data).
+ * Prefers USGS if both exist for the same location.
  */
 function mergeEvents(usgsEvents, phivolcsEvents) {
   const combined = [...usgsEvents];
@@ -120,19 +119,19 @@ export default async function handler(req, res) {
 
     console.log(`[events/latest] Fetching USGS feed: ${feed}`);
 
-    // Fetch USGS data
+    // USGS data
     const rawData = await fetchLatestEvents(feed);
     let usgsEvents = rawData.features.map(simplifyEvent);
     usgsEvents = usgsEvents.filter(e => isWithinPhilippines(e.latitude, e.longitude));
     usgsEvents.forEach(e => { e.source = 'USGS'; });
 
-    // Fetch PHIVOLCS data (non‑critical, failures are logged but don't break the response)
+    // PHIVOLCS data via RSS (non‑critical, failures are logged)
     let phivolcsEvents = [];
     try {
       phivolcsEvents = await fetchPHIVOLCSEvents();
       console.log(`[events/latest] Fetched ${phivolcsEvents.length} PHIVOLCS events`);
     } catch (err) {
-      // Already handled inside fetchPHIVOLCSEvents
+      // Already logged inside fetchPHIVOLCSEvents
     }
 
     // Merge and sort
@@ -156,9 +155,9 @@ export default async function handler(req, res) {
         generated: Date.now(),
         count: allEvents.length,
         feed,
-        region: 'Philippines',
+        region: 'Philippines'
       },
-      events: allEvents,
+      events: allEvents
     });
   } catch (err) {
     console.error('[events/latest] Error:', err.message);
@@ -166,7 +165,7 @@ export default async function handler(req, res) {
     res.status(200).json({
       type: 'FeatureCollection',
       metadata: { generated: Date.now(), count: 0, feed, region: 'Philippines', error: err.message },
-      events: [],
+      events: []
     });
   }
 }
