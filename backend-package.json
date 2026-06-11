@@ -1,0 +1,11 @@
+{
+  "name": "quake-alert-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vercel/postgres": "^0.8.0",
+    "firebase-admin": "^12.0.0",
+    "postgres": "^3.4.0"
+  }
+}
