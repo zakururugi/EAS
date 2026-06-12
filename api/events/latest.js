@@ -8,6 +8,7 @@
 
 import { fetchLatestEvents, simplifyEvent } from '../_lib/usgs.js';
 import Parser from 'rss-parser';
+import https from 'https';
 
 // Philippines bounding box
 const PH_MIN_LAT = 4.5;
@@ -17,6 +18,9 @@ const PH_MAX_LON = 126.5;
 
 const PHIVOLCS_RSS_URL = 'https://earthquake.phivolcs.dost.gov.ph/feed_rss.xml';
 const RSS_PARSER = new Parser();
+
+// Custom HTTPS agent that ignores SSL certificate errors for PHIVOLCS
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 function isWithinPhilippines(lat, lon) {
   if (lat == null || lon == null) return false;
@@ -30,16 +34,23 @@ function isWithinPhilippines(lat, lon) {
  */
 async function fetchPHIVOLCSEvents() {
   try {
-    const feed = await RSS_PARSER.parseURL(PHIVOLCS_RSS_URL);
+    // Use fetch with custom agent (or node-fetch) – we'll use the native fetch + Agent
+    // Native fetch does not accept an Agent, so we use rss-parser's custom fetch option.
+    // We'll override the default fetch to include our agent.
+    const customFetch = async (url, options = {}) => {
+      const https = await import('https');
+      const agent = new https.Agent({ rejectUnauthorized: false });
+      return fetch(url, { ...options, agent });
+    };
+
+    const feed = await RSS_PARSER.parseURL(PHIVOLCS_RSS_URL, { fetch: customFetch });
     const items = feed.items || [];
 
     return items.map(item => {
-      // Example title: "Magnitude 4.2, 018 km N 71° W of Nasugbu (Batangas)"
       const titleMatch = item.title?.match(/Magnitude ([\d.]+), (.+)/i);
       const magnitude = titleMatch ? parseFloat(titleMatch[1]) : 0;
       const location = titleMatch ? titleMatch[2].trim() : item.title || 'Philippines';
 
-      // Extract coordinates from description if available
       let lat = null, lon = null;
       const desc = item.description || '';
       const latMatch = desc.match(/Latitude:\s*([\d.]+)/i);
@@ -49,12 +60,11 @@ async function fetchPHIVOLCSEvents() {
         lon = parseFloat(lonMatch[1]);
       }
 
-      // Parse publication date
       let timestamp = Date.now();
       if (item.pubDate) {
         try {
           timestamp = new Date(item.pubDate).getTime();
-        } catch (e) { /* keep default */ }
+        } catch { /* keep default */ }
       }
 
       return {
@@ -64,7 +74,7 @@ async function fetchPHIVOLCSEvents() {
         place: location,
         time: timestamp,
         updated: timestamp,
-        depth: 0,                       // RSS does not provide depth reliably
+        depth: 0,
         latitude: lat,
         longitude: lon,
         url: item.link || '',
@@ -79,10 +89,6 @@ async function fetchPHIVOLCSEvents() {
   }
 }
 
-/**
- * Deduplicate events from USGS and PHIVOLCS by proximity (within ~0.5° lat/lon).
- * Prefers USGS if both exist for the same location.
- */
 function mergeEvents(usgsEvents, phivolcsEvents) {
   const combined = [...usgsEvents];
   const used = new Set(usgsEvents.map(e => `${e.latitude?.toFixed(1)},${e.longitude?.toFixed(1)}`));
@@ -106,7 +112,6 @@ export default async function handler(req, res) {
     res.status(200).end();
     return;
   }
-
   if (req.method !== 'GET') {
     res.status(405).json({ error: 'Method not allowed. Use GET.' });
     return;
@@ -119,33 +124,24 @@ export default async function handler(req, res) {
 
     console.log(`[events/latest] Fetching USGS feed: ${feed}`);
 
-    // USGS data
     const rawData = await fetchLatestEvents(feed);
     let usgsEvents = rawData.features.map(simplifyEvent);
     usgsEvents = usgsEvents.filter(e => isWithinPhilippines(e.latitude, e.longitude));
     usgsEvents.forEach(e => { e.source = 'USGS'; });
 
-    // PHIVOLCS data via RSS (non‑critical, failures are logged)
     let phivolcsEvents = [];
     try {
       phivolcsEvents = await fetchPHIVOLCSEvents();
       console.log(`[events/latest] Fetched ${phivolcsEvents.length} PHIVOLCS events`);
-    } catch (err) {
-      // Already logged inside fetchPHIVOLCSEvents
-    }
+    } catch { /* already handled */ }
 
-    // Merge and sort
     let allEvents = mergeEvents(usgsEvents, phivolcsEvents);
 
     if (minMagnitude > 0) {
       allEvents = allEvents.filter(e => e.magnitude >= minMagnitude);
     }
-
     allEvents.sort((a, b) => b.time - a.time);
-
-    if (limit > 0 && allEvents.length > limit) {
-      allEvents = allEvents.slice(0, limit);
-    }
+    if (limit > 0 && allEvents.length > limit) allEvents = allEvents.slice(0, limit);
 
     console.log(`[events/latest] Returning ${allEvents.length} events (USGS: ${usgsEvents.length}, PHIVOLCS: ${phivolcsEvents.length})`);
 
@@ -161,7 +157,6 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error('[events/latest] Error:', err.message);
-    // Return empty list instead of crashing
     res.status(200).json({
       type: 'FeatureCollection',
       metadata: { generated: Date.now(), count: 0, feed, region: 'Philippines', error: err.message },
