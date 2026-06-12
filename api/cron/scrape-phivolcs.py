@@ -42,6 +42,7 @@ def scrape_phivolcs():
     response.encoding = 'utf-8'
     soup = BeautifulSoup(response.text, 'html.parser')
     earthquakes = []
+
     # Try table parsing
     for table in soup.find_all('table'):
         rows = table.find_all('tr')
@@ -50,11 +51,16 @@ def scrape_phivolcs():
         header_texts = [c.get_text().strip().lower() for c in rows[0].find_all(['th', 'td'])]
         col_map = {}
         for i, t in enumerate(header_texts):
-            if 'mag' in t or 'magnitude' in t: col_map['mag'] = i
-            elif 'depth' in t: col_map['depth'] = i
-            elif 'lat' in t: col_map['lat'] = i
-            elif 'lon' in t: col_map['lon'] = i
-            elif 'loc' in t or 'place' in t: col_map['place'] = i
+            if 'mag' in t or 'magnitude' in t:
+                col_map['mag'] = i
+            elif 'depth' in t:
+                col_map['depth'] = i
+            elif 'lat' in t:
+                col_map['lat'] = i
+            elif 'lon' in t:
+                col_map['lon'] = i
+            elif 'loc' in t or 'place' in t:
+                col_map['place'] = i
         if 'mag' not in col_map:
             continue
         for row in rows[1:]:
@@ -71,16 +77,20 @@ def scrape_phivolcs():
                     txt = cells[idx].get_text().strip()
                     if f == 'mag':
                         m = re.search(r'[\d.]+', txt)
-                        if m: mag_val = float(m.group())
+                        if m:
+                            mag_val = float(m.group())
                     elif f == 'depth':
                         m = re.search(r'[\d.]+', txt)
-                        if m: depth_val = float(m.group())
+                        if m:
+                            depth_val = float(m.group())
                     elif f == 'lat':
                         m = re.search(r'[\d.]+', txt)
-                        if m: lat_val = float(m.group())
+                        if m:
+                            lat_val = float(m.group())
                     elif f == 'lon':
                         m = re.search(r'[\d.]+', txt)
-                        if m: lon_val = float(m.group())
+                        if m:
+                            lon_val = float(m.group())
                     elif f == 'place':
                         place_val = txt
             if lat_val is not None and lon_val is not None and not is_within_philippines(lat_val, lon_val):
@@ -98,6 +108,7 @@ def scrape_phivolcs():
                 })
         if earthquakes:
             break
+
     # Fallback: simple regex
     if not earthquakes:
         mag_m = re.findall(r'[Mm](?:ag(?:nitude)?)?\s*[:.]?\s*([\d.]+)', soup.get_text())
@@ -112,43 +123,44 @@ def scrape_phivolcs():
             if mag >= 3:
                 earthquakes.append({
                     'id': f'ph-{datetime.now().timestamp()}-{mag}-{i}',
-                    'source': 'PHIVOLCS', 'magnitude': mag,
-                    'place': 'Philippines', 'depth': 0,
-                    'latitude': lat, 'longitude': lon,
+                    'source': 'PHIVOLCS',
+                    'magnitude': mag,
+                    'place': 'Philippines',
+                    'depth': 0,
+                    'latitude': lat,
+                    'longitude': lon,
                     'time': int(datetime.now().timestamp() * 1000),
                 })
     return earthquakes
 
-class handler:
-    def do_GET(self): self._handle()
-    def do_POST(self): self._handle()
-    def _handle(self):
-        secret = os.environ.get('CRON_SECRET', '')
-        auth = getattr(self, 'headers', {})
-        if hasattr(auth, 'get'):
-            auth = auth.get('Authorization', '')
-        else:
-            auth = ''
-        if secret and auth != f'Bearer {secret}':
-            self._respond(401, {'error': 'Unauthorized'})
-            return
-        try:
-            earthquakes = scrape_phivolcs()
-            self._respond(200, {
-                'last_updated': datetime.now().isoformat(),
-                'count': len(earthquakes),
-                'earthquakes': earthquakes,
-            })
-        except Exception as e:
-            self._respond(200, {
-                'last_updated': datetime.now().isoformat(),
-                'count': 0, 'earthquakes': [],
-                'error': str(e),
-            })
-    def _respond(self, status, data):
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(body)
+def handler(request, response):
+    """Vercel Python serverless function handler."""
+    secret = os.environ.get('CRON_SECRET', '')
+    auth_header = request.headers.get('authorization', '')
+
+    if not secret:
+        response.status_code = 500
+        return response.json({'error': 'CRON_SECRET not configured'})
+
+    expected = f"Bearer {secret}"
+    if auth_header != expected:
+        response.status_code = 401
+        return response.json({'error': 'Unauthorized'})
+
+    try:
+        earthquakes = scrape_phivolcs()
+        result = {
+            'last_updated': datetime.now().isoformat(),
+            'count': len(earthquakes),
+            'earthquakes': earthquakes,
+        }
+        response.status_code = 200
+        return response.json(result)
+    except Exception as e:
+        response.status_code = 200
+        return response.json({
+            'last_updated': datetime.now().isoformat(),
+            'count': 0,
+            'earthquakes': [],
+            'error': str(e)
+        })
