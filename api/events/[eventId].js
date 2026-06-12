@@ -1,10 +1,13 @@
 /**
  * GET /api/events/:eventId
  *
- * Returns full event details from USGS and optionally finds the ShakeMap contour URL.
+ * Returns PHIVOLCS event details.
+ * Since PHIVOLCS doesn't provide ShakeMap contour URLs like USGS,
+ * we return the event data and a hasShakeMap=false flag.
+ * The frontend generates approximate intensity contours locally.
  */
 
-import { fetchEventDetails, findShakeMapContourUrl, simplifyEvent } from '../_lib/usgs.js';
+import { scrapePhivolcsEvents } from '../_lib/phivolcs-scraper.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -28,35 +31,28 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log(`[events/${eventId}] Fetching event details...`);
+    console.log(`[events/${eventId}] Looking up event...`);
 
-    const event = await fetchEventDetails(eventId);
+    // Fetch all PHIVOLCS events and find the one matching eventId
+    const allEvents = await scrapePhivolcsEvents();
+    const event = allEvents.find(e => e.eventId === eventId);
 
-    if (!event || !event.properties) {
-      res.status(404).json({ error: `Event ${eventId} not found` });
+    if (!event) {
+      res.status(404).json({ error: `Event ${eventId} not found in PHIVOLCS data` });
       return;
     }
 
-    const simplified = simplifyEvent(event);
-
-    // Find ShakeMap contour URL if available
-    const shakemapUrl = findShakeMapContourUrl(event);
-
     res.status(200).json({
-      ...simplified,
-      shakemapUrl,
-      hasShakeMap: shakemapUrl !== null,
+      ...event,
+      shakemapUrl: null,
+      hasShakeMap: false,
+      source: 'PHIVOLCS'
     });
   } catch (err) {
     console.error(`[events/${eventId}] Error:`, err.message);
-
-    if (err.message?.includes('404') || err.message?.includes('not found')) {
-      res.status(404).json({ error: `Event ${eventId} not found` });
-    } else {
-      res.status(502).json({
-        error: 'Failed to fetch event details from USGS',
-        details: err.message,
-      });
-    }
+    res.status(502).json({
+      error: 'Failed to fetch event details from PHIVOLCS',
+      details: err.message,
+    });
   }
 }

@@ -271,26 +271,53 @@ export default {
 
     /**
      * Generate approximate ShakeMap intensity zones based on magnitude and depth.
-     * Uses concentric circles with MMi labels.
+     * Uses empirically-adjusted concentric circles with MMI labels.
+     *
+     * Real-world MMI at epicenter for shallow quakes (~10km depth):
+     *   M4.8 → MMI ~ 5-6 (Moderate to Strong)
+     *   M5.0 → MMI ~ 6   (Strong)
+     *   M5.5 → MMI ~ 7   (Very strong)
+     *   M6.0 → MMI ~ 7-8 (Severe)
+     *   M7.0 → MMI ~ 9   (Violent)
+     *
+     * Only shown for mag >= 4.5 (events that can actually be felt).
      */
     function generateApproximateShakeMap(event) {
       const mag = event.magnitude || 0;
-      const depth = (event.depth || 10) * 1000; // Convert km to meters for attenuation
+      const depth = event.depth || 10;
       const lat = event.latitude;
       const lng = event.longitude;
 
-      if (!lat || !lng || mag < 4) return null;
+      // Don't show for small events that can't be felt
+      if (!lat || !lng || mag < 4.5) return null;
+
+      // Compute epicentral MMI — improved empirical formula
+      // Based on PHIVOLCS and USGS intensity observations
+      const epicenterMmi = Math.min(10, Math.max(1, Math.round(1.5 * mag - 2.0)));
+      // For mag < 4.5 we already returned null above
+      if (epicenterMmi < 2) return null;
+
+      // Depth factor: deeper = same MMI spread over wider area but weaker at center
+      const depthFactor = Math.min(3, Math.max(0.8, depth / 8));
+
+      // MMI levels and their approximate radii from epicenter (km)
+      // Attenuation model: radius roughly doubles every 2 MMI steps
+      const levels = [
+        { mmi: epicenterMmi, radius: Math.max(epicenterMmi * 2, 3) },
+        { mmi: epicenterMmi - 1, radius: Math.max(epicenterMmi * 4, 8) },
+        { mmi: epicenterMmi - 2, radius: Math.max(epicenterMmi * 8, 15) },
+        { mmi: Math.max(1, epicenterMmi - 3), radius: Math.max(epicenterMmi * 16, 30) },
+      ];
+
+      const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
 
       const features = [];
-      const radiiKm = [10, 20, 40, 80, 120, 180, 250, 350];
-      const mmis = [8, 7, 6, 5, 4, 3, 2, 1];
 
-      for (let i = 0; i < radiiKm.length; i++) {
-        const radiusKm = radiiKm[i];
-        // Check if this MMI level would be felt at this distance given magnitude
-        const expectedMmi = Math.min(10, Math.max(1, Math.round(mag * 1.5 - Math.log10(depth + 1) * 2 - radiusKm / 30)));
+      for (const level of levels) {
+        if (level.mmi < 1) continue;
 
-        if (expectedMmi < 1) continue;
+        const radiusKm = level.radius * depthFactor;
+        if (radiusKm < 1) continue;
 
         const radiusM = radiusKm * 1000;
         const points = [];
@@ -303,9 +330,11 @@ export default {
           points.push([lng + dLng, lat + dLat]);
         }
 
+        const desc = mmiDesc[level.mmi] || '';
+
         features.push({
           type: 'Feature',
-          properties: { MMI: expectedMmi, label: `${expectedMmi}` },
+          properties: { MMI: level.mmi, label: `MMI ${level.mmi} – ${desc}` },
           geometry: {
             type: 'Polygon',
             coordinates: [points],
@@ -315,7 +344,7 @@ export default {
 
       return {
         type: 'FeatureCollection',
-        metadata: { generated: true, eventName: event.place },
+        metadata: { generated: true, source: 'PHIVOLCS', eventName: event.place },
         features,
       };
     }
@@ -339,21 +368,19 @@ export default {
           shakemapContours.value = contours;
         }
 
-        // Then fetch fresh data
+        // Try to fetch contours from backend (returns approximate contours for PHIVOLCS)
         try {
-          const detail = await api.fetchEventDetails(eventId);
-          if (detail.hasShakeMap) {
-            const freshContours = await api.fetchEventContours(eventId);
-            shakemapContours.value = freshContours;
+          const contours = await api.fetchEventContours(eventId);
+          if (contours && contours.features && contours.features.length > 0) {
+            shakemapContours.value = contours;
             // Cache it
-            cacheShakeMap(eventId, freshContours);
+            cacheShakeMap(eventId, contours);
           }
         } catch (err) {
-          console.warn('[App] Could not load ShakeMap:', err.message);
-          // Keep cached contours if fetch failed
+          console.warn('[App] Could not load ShakeMap from backend:', err.message);
         }
 
-        // If no contours available, generate approximate intensity zones
+        // If no contours from backend, generate approximate intensity zones locally
         if (!shakemapContours.value && selectedEvent.value) {
           const approximateContours = generateApproximateShakeMap(selectedEvent.value);
           if (approximateContours) {

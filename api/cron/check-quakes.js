@@ -2,10 +2,11 @@
  * GET /api/cron/check-quakes
  *
  * CRON job endpoint. Protected by CRON_SECRET.
- * If database or FCM is unavailable, returns 200 but skips processing.
+ * Checks for new PHIVOLCS earthquakes and sends push notifications.
+ * Returns a compact response (small payload to avoid "output too large").
  */
 
-import { fetchLatestEvents, simplifyEvent } from '../_lib/usgs.js';
+import { fetchPhivolcsEvents } from '../_lib/phivolcs-scraper.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -28,20 +29,21 @@ export default async function handler(req, res) {
   try {
     console.log('[cron/check-quakes] Starting check...');
 
-    let rawData;
+    // Fetch PHIVOLCS events
+    let events;
     try {
-      rawData = await fetchLatestEvents('earthquakes/feed/v1.0/summary/4.5_day.geojson');
+      events = await fetchPhivolcsEvents();
     } catch (fetchErr) {
-      res.status(200).json({ checked: true, newEvents: 0, message: 'USGS fetch failed' });
+      console.warn('[cron/check-quakes] PHIVOLCS fetch failed:', fetchErr.message);
+      res.status(200).json({ checked: true, newEvents: 0, message: 'PHIVOLCS fetch failed' });
       return;
     }
 
-    if (!rawData.features || rawData.features.length === 0) {
+    if (!events || events.length === 0) {
       res.status(200).json({ checked: true, newEvents: 0, message: 'No events' });
       return;
     }
 
-    const events = rawData.features.map(simplifyEvent);
     events.sort((a, b) => a.time - b.time);
     let totalNotifications = 0;
     let processedCount = 0;
@@ -52,7 +54,7 @@ export default async function handler(req, res) {
       let { sendMulticastNotification, buildEarthquakeNotification } = await import('../_lib/fcm.js');
 
       const cronState = await query(`SELECT last_run_at FROM cron_state WHERE id = 1`);
-      const lastRunAt = cronState.rows.length > 0 ? new Date(cronState.rows[0].last_run_at).getTime() : Date.now() - 120000;
+      const lastRunAt = cronState.rows.length > 0 ? new Date(cronState.rows[0].last_run_at).getTime() : Date.now() - 180000;
       const newEvents = events.filter((e) => e.time > lastRunAt);
 
       if (newEvents.length > 0) {
@@ -88,6 +90,7 @@ export default async function handler(req, res) {
       console.warn('[cron/check-quakes] DB unavailable:', dbErr.message);
     }
 
+    // Compact response — avoid "output too large"
     res.status(200).json({
       checked: true,
       newEvents: events.length,
@@ -96,6 +99,7 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error('[cron/check-quakes] Fatal:', err.message);
-    res.status(500).json({ error: 'Cron job failed', details: err.message });
+    // Return 200 with minimal payload even on fatal errors
+    res.status(200).json({ checked: false, newEvents: 0, message: err.message });
   }
 }
