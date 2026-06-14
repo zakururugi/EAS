@@ -1,5 +1,5 @@
 <template>
-  <div class="app-container">
+  <div class="app-container" @click="handleClickOutside">
     <!-- Main Map -->
     <MapView
       ref="mapView"
@@ -10,6 +10,10 @@
       :loading="loading"
       :error="error"
       :user-location="userLocation"
+      :user-accuracy="userAccuracy"
+      :map-min-magnitude="mapMinMagnitude"
+      :follow-location="followLocation"
+      :soil-type="parseFloat(soilType)"
       @select-event="selectEvent"
       @zone-created="onZoneCreated"
       @zone-deleted="onZoneDeleted"
@@ -18,6 +22,12 @@
     <!-- Loading overlay (subtle map spinner) -->
     <div v-if="loading" class="map-loading-spinner">
       <div class="spinner"></div>
+    </div>
+
+    <!-- ShakeMap loading spinner (separate) -->
+    <div v-if="shakemapLoading" class="shakemap-loading-spinner">
+      <div class="spinner"></div>
+      <span>Loading ShakeMap...</span>
     </div>
 
     <!-- Error Banner -->
@@ -34,7 +44,7 @@
     <!-- Sidebar Toggle -->
     <button
       class="sidebar-toggle"
-      @click="showSidebar = !showSidebar"
+      @click.stop="showSidebar = !showSidebar"
       :title="showSidebar ? 'Hide sidebar' : 'Show sidebar'"
     >
       <span v-if="!showSidebar">☰</span>
@@ -44,7 +54,7 @@
     <!-- Settings Toggle -->
     <button
       class="settings-toggle"
-      @click="showSettings = !showSettings"
+      @click.stop="showSettings = !showSettings"
       :title="showSettings ? 'Close settings' : 'Open settings'"
     >
       ⚙
@@ -63,7 +73,7 @@
     <!-- Jump to My Location Button -->
     <button
       class="locate-btn"
-      @click="jumpToMyLocation"
+      @click.stop="jumpToMyLocation"
       title="Jump to my location"
     >
       📍
@@ -103,6 +113,9 @@
     <SettingsPanel
       v-if="showSettings"
       :min-magnitude="minMagnitude"
+      :map-min-magnitude="mapMinMagnitude"
+      :soil-type="soilType"
+      :follow-location="followLocation"
       :push-enabled="pushEnabled"
       :watch-zones="watchZones"
       :vapid-key="vapidKey"
@@ -110,12 +123,16 @@
       :date-from="dateFrom"
       :date-to="dateTo"
       @update:min-magnitude="minMagnitude = $event"
+      @update:map-min-magnitude="mapMinMagnitude = $event"
+      @update:soil-type="soilType = $event"
+      @update:follow-location="followLocation = $event"
       @toggle-push="togglePush"
       @delete-zone="onZoneDeleted"
       @update:date-from="dateFrom = $event"
       @update:date-to="dateTo = $event"
       @apply-dates="loadEvents"
       @reset-dates="resetDates"
+      @close="showSettings = false"
     />
 
     <!-- Shaking Timeline -->
@@ -151,14 +168,14 @@
 </template>
 
 <script>
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import MapView from './components/MapView.vue';
 import Sidebar from './components/Sidebar.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import ShakingTimeline from './components/ShakingTimeline.vue';
 import * as api from './lib/api.js';
 import { getDeviceId } from './lib/device.js';
-import { cacheEvents, loadCachedEvents, cacheShakeMap, loadCachedShakeMap, onNetworkChange } from './lib/cache.js';
+import { cacheEvents, loadCachedEvents, cacheShakeMap, loadCachedShakeMap, onNetworkChange, cacheZones, loadCachedZones } from './lib/cache.js';
 
 export default {
   name: 'App',
@@ -172,6 +189,7 @@ export default {
     const selectedEventId = ref(null);
     const selectedEvent = ref(null);
     const shakemapContours = ref(null);
+    const shakemapLoading = ref(false);
     const loading = ref(true);
     const sidebarLoading = ref(true);
     const error = ref(null);
@@ -182,6 +200,7 @@ export default {
     const sortBy = ref('time');
     const mapView = ref(null);
     const userLocation = ref(null);
+    const userAccuracy = ref(null);
     const showFeltDialog = ref(false);
     const isOffline = ref(false);
     const hasPHIVOLCS = ref(false);
@@ -190,6 +209,9 @@ export default {
 
     // Settings
     const minMagnitude = ref(4.5);
+    const mapMinMagnitude = ref(2.0);
+    const soilType = ref(localStorage.getItem('quake_soil_type') || '1.0');
+    const followLocation = ref(localStorage.getItem('quake_follow_location') !== 'false'); // default true
     const pushEnabled = ref(false);
     const watchZones = ref([]);
     const fcmStatus = ref('idle');
@@ -197,6 +219,9 @@ export default {
     const dateTo = ref('');
 
     const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY || '';
+
+    // Geolocation watch ID
+    let geoWatchId = null;
 
     // ============================================================
     // Hash-based routing for shareable links
@@ -207,6 +232,17 @@ export default {
         const eventId = hash.replace('#/event/', '');
         if (eventId) {
           selectEvent(eventId);
+        }
+      }
+    }
+
+    // Click outside to close settings
+    function handleClickOutside(e) {
+      if (showSettings.value) {
+        const panel = document.querySelector('.settings-panel');
+        const toggle = document.querySelector('.settings-toggle');
+        if (panel && !panel.contains(e.target) && toggle && !toggle.contains(e.target)) {
+          showSettings.value = false;
         }
       }
     }
@@ -226,17 +262,13 @@ export default {
           limit: 100,
         });
 
-        // The backend now filters to Philippines and includes PHIVOLCS data
         const allEvents = data.events || [];
 
-        // Check if any events have source='PHIVOLCS'
         hasPHIVOLCS.value = allEvents.some((e) => e.source === 'PHIVOLCS');
 
-        // Keep old events until new data is ready - prevents flash of empty sidebar
         events.value = allEvents;
         lastUpdated.value = Date.now();
 
-        // Cache events for offline
         cacheEvents(allEvents);
 
         console.log(`[App] Loaded ${allEvents.length} events`);
@@ -244,15 +276,12 @@ export default {
         console.error('[App] Failed to load events:', err.message);
         error.value = err.message;
 
-        // Keep existing events on error instead of clearing them
-
-        // Try loading from cache if offline
         if (!navigator.onLine) {
           const cached = await loadCachedEvents();
           if (cached.length > 0) {
             events.value = cached;
             isOffline.value = true;
-            error.value = null; // Clear error since we have cached data
+            error.value = null;
           }
         }
       } finally {
@@ -273,52 +302,40 @@ export default {
     }
 
     /**
-     * Generate approximate ShakeMap intensity zones based on magnitude and depth.
-     * Uses an empirically-based attenuation formula (USGS-style) for realistic radii.
-     *
-     * Attenuation model: distance(km) = 10^((mag - log10(MMI)) / c)
-     * where c ≈ 1.8 is the attenuation coefficient.
-     *
-     * Real-world MMI at epicenter for shallow quakes (~10km depth):
-     *   M4.8 → MMI ~ 5-6 (Moderate to Strong)
-     *   M5.0 → MMI ~ 6   (Strong)
-     *   M5.5 → MMI ~ 7   (Very strong)
-     *   M6.0 → MMI ~ 7-8 (Severe)
-     *   M7.0 → MMI ~ 9   (Violent)
-     *
-     * Only shown for mag >= 4.5 (events that can actually be felt).
+     * Generate approximate ShakeMap intensity zones based on magnitude, depth, and soil type.
+     * Uses empirical USGS-style attenuation formula.
      */
     function generateApproximateShakeMap(event) {
       const mag = event.magnitude || 0;
       const depth = event.depth || 10;
       const lat = event.latitude;
       const lng = event.longitude;
+      const siteAmp = parseFloat(soilType.value) || 1.0;
 
-      // Don't show for small events that can't be felt
       if (!lat || !lng || mag < 4.5) return null;
 
-      // MMI levels to render (filter to realistic ones for this magnitude)
+      // MMI levels to render
       const levels = [8, 7, 6, 5, 4, 3, 2].filter(mmi => mmi <= 1.5 * mag - 1);
       if (levels.length === 0) return null;
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
 
-      // Attenuation coefficient (empirical, USGS-style)
-      const c = 1.8;
-
-      // Depth adjustment: deeper quakes reduce surface intensity
+      const c = 1.8; // attenuation coefficient
       const depthFactor = Math.min(1.2, 10 / (depth + 5));
 
       const features = [];
 
       for (const mmi of levels) {
-        // Distance in km where expected MMI equals this level
         let radiusKm = Math.pow(10, (mag - Math.log10(mmi)) / c);
         radiusKm = Math.min(radiusKm, 400);  // cap at 400 km
         if (radiusKm < 5) continue;
 
         // Apply depth factor
         radiusKm *= depthFactor;
+
+        // Apply site amplification: larger radius = wider felt area
+        // We boost radius by sqrt(amp) since higher amplification = wider felt area
+        radiusKm *= Math.sqrt(siteAmp);
 
         const radiusM = radiusKm * 1000;
         const points = [];
@@ -345,7 +362,7 @@ export default {
 
       return {
         type: 'FeatureCollection',
-        metadata: { generated: true, source: 'PHIVOLCS', eventName: event.place },
+        metadata: { generated: true, source: 'PHIVOLCS', eventName: event.place, soilAmp: siteAmp },
         features,
       };
     }
@@ -355,7 +372,6 @@ export default {
       selectedEvent.value = events.value.find((e) => e.id === eventId) || null;
       shakemapContours.value = null;
 
-      // Update URL hash for shareable links
       if (eventId) {
         window.location.hash = `#/event/${eventId}`;
       } else {
@@ -363,67 +379,77 @@ export default {
       }
 
       if (eventId) {
-        // First try loading from cache
+        shakemapLoading.value = true;
+
         let contours = await loadCachedShakeMap(eventId);
         if (contours) {
           shakemapContours.value = contours;
         }
 
-        // Try to fetch contours from backend (returns approximate contours for PHIVOLCS)
         try {
           const contours = await api.fetchEventContours(eventId);
           if (contours && contours.features && contours.features.length > 0) {
             shakemapContours.value = contours;
-            // Cache it
             cacheShakeMap(eventId, contours);
           }
         } catch (err) {
           console.warn('[App] Could not load ShakeMap from backend:', err.message);
         }
 
-        // If no contours from backend, generate approximate intensity zones locally
         if (!shakemapContours.value && selectedEvent.value) {
           const approximateContours = generateApproximateShakeMap(selectedEvent.value);
           if (approximateContours) {
             shakemapContours.value = approximateContours;
           }
         }
+
+        shakemapLoading.value = false;
       }
     }
 
-    function getUserLocation() {
+    function startWatchingLocation() {
+      if (geoWatchId != null) return;
       if (!navigator.geolocation) {
-        userLocation.value = { lat: 12.8797, lng: 121.7740 }; // Default to Philippines
+        userLocation.value = { lat: 12.8797, lng: 121.7740 };
         return;
       }
 
-      navigator.geolocation.getCurrentPosition(
+      geoWatchId = navigator.geolocation.watchPosition(
         (pos) => {
           userLocation.value = {
             lat: pos.coords.latitude,
             lng: pos.coords.longitude,
           };
+          userAccuracy.value = pos.coords.accuracy;
         },
         () => {
-          userLocation.value = { lat: 12.8797, lng: 121.7740 }; // Default to Philippines
+          // Error: use default
+          userLocation.value = { lat: 12.8797, lng: 121.7740 };
+          userAccuracy.value = null;
         },
-        { enableHighAccuracy: false, timeout: 10000 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
       );
+    }
+
+    function stopWatchingLocation() {
+      if (geoWatchId != null) {
+        navigator.geolocation.clearWatch(geoWatchId);
+        geoWatchId = null;
+      }
     }
 
     function jumpToMyLocation() {
       if (!navigator.geolocation) return;
-      // Re-fetch location every time the button is clicked for accuracy
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           const newLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
           userLocation.value = newLoc;
+          userAccuracy.value = pos.coords.accuracy;
           if (mapView.value) {
             mapView.value.flyToLocation(newLoc.lat, newLoc.lng, 10);
           }
         },
         () => {
-          // If location fetch fails and we have a cached location, jump to it
           if (userLocation.value && mapView.value) {
             mapView.value.flyToLocation(
               userLocation.value.lat,
@@ -453,7 +479,6 @@ export default {
           // User cancelled
         }
       } else {
-        // Fallback: copy to clipboard
         try {
           await navigator.clipboard.writeText(shareUrl);
           alert('Link copied to clipboard!');
@@ -465,6 +490,27 @@ export default {
 
     watch(minMagnitude, (val) => {
       localStorage.setItem('quake_min_magnitude', String(val));
+    });
+
+    watch(mapMinMagnitude, (val) => {
+      localStorage.setItem('quake_map_min_magnitude', String(val));
+    });
+
+    watch(soilType, (val) => {
+      localStorage.setItem('quake_soil_type', String(val));
+      // If an event is selected, regenerate ShakeMap with new soil type
+      if (selectedEvent.value) {
+        selectEvent(selectedEvent.value.id);
+      }
+    });
+
+    watch(followLocation, (val) => {
+      localStorage.setItem('quake_follow_location', String(val));
+      if (val) {
+        startWatchingLocation();
+      } else {
+        stopWatchingLocation();
+      }
     });
 
     async function togglePush(enabled) {
@@ -508,7 +554,15 @@ export default {
         const deviceId = getDeviceId();
         const data = await api.fetchZones(deviceId);
         watchZones.value = data.zones || [];
-      } catch { /* ignore */ }
+        // Also cache zones offline
+        cacheZones(watchZones.value);
+      } catch {
+        // If offline, load cached zones
+        const cached = await loadCachedZones();
+        if (cached.length > 0) {
+          watchZones.value = cached;
+        }
+      }
     }
 
     async function onZoneCreated(polygon) {
@@ -544,10 +598,6 @@ export default {
       loadEvents();
     }
 
-    /**
-     * Open the Shaking Timeline panel for the currently selected event.
-     * Computes the Haversine distance from the user to the epicenter.
-     */
     function openTimeline() {
       if (!selectedEvent.value) {
         alert('Select an earthquake first.');
@@ -577,23 +627,20 @@ export default {
         showFeltDialog.value = true;
       });
 
-      // Jump to location handler
       window.addEventListener('jump-to-location', () => {
-        getUserLocation();
+        startWatchingLocation();
       });
 
-      // Open shaking timeline from MapView popup
       document.addEventListener('open-shaking-timeline', (e) => {
         const eventId = e.detail;
         if (eventId) selectEvent(eventId);
         openTimeline();
       });
 
-      // Network status changes
       const cleanup = onNetworkChange(
         () => {
           isOffline.value = false;
-          loadEvents(); // Reload when back online
+          loadEvents();
         },
         () => {
           isOffline.value = true;
@@ -606,37 +653,77 @@ export default {
     // ============================================================
 
     onMounted(async () => {
-      // Restore settings
       const savedMag = localStorage.getItem('quake_min_magnitude');
       if (savedMag) minMagnitude.value = parseFloat(savedMag);
+
+      const savedMapMag = localStorage.getItem('quake_map_min_magnitude');
+      if (savedMapMag) mapMinMagnitude.value = parseFloat(savedMapMag);
+
       const savedPush = localStorage.getItem('quake_push_enabled');
       pushEnabled.value = savedPush === 'true';
 
-      // Check initial online status
+      const savedSoil = localStorage.getItem('quake_soil_type');
+      if (savedSoil) soilType.value = savedSoil;
+
+      const savedFollow = localStorage.getItem('quake_follow_location');
+      if (savedFollow === 'false') followLocation.value = false;
+
       isOffline.value = !navigator.onLine;
 
       getDeviceId();
-      getUserLocation();
+
+      // Start watching location (followLocation defaults to true)
+      if (followLocation.value) {
+        startWatchingLocation();
+      } else {
+        // One-time location fetch for initial position
+        getUserLocation();
+      }
+
       setupCustomEvents();
 
-      // Check hash for direct event link
       handleHashChange();
       window.addEventListener('hashchange', handleHashChange);
 
       await loadEvents();
       await loadZones();
 
-      // Auto-refresh every 60 seconds
       setInterval(async () => {
         await loadEvents();
       }, 60000);
     });
+
+    onBeforeUnmount(() => {
+      stopWatchingLocation();
+      window.removeEventListener('hashchange', handleHashChange);
+    });
+
+    function getUserLocation() {
+      if (!navigator.geolocation) {
+        userLocation.value = { lat: 12.8797, lng: 121.7740 };
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          userLocation.value = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          };
+          userAccuracy.value = pos.coords.accuracy;
+        },
+        () => {
+          userLocation.value = { lat: 12.8797, lng: 121.7740 };
+        },
+        { enableHighAccuracy: false, timeout: 10000 }
+      );
+    }
 
     return {
       events,
       selectedEventId,
       selectedEvent,
       shakemapContours,
+      shakemapLoading,
       loading,
       sidebarLoading,
       error,
@@ -646,7 +733,11 @@ export default {
       showSettings,
       sortBy,
       userLocation,
+      userAccuracy,
       minMagnitude,
+      mapMinMagnitude,
+      soilType,
+      followLocation,
       pushEnabled,
       watchZones,
       fcmStatus,
@@ -670,6 +761,7 @@ export default {
       shareEvent,
       resetDates,
       openTimeline,
+      handleClickOutside,
     };
   },
 };
@@ -697,6 +789,23 @@ export default {
   align-items: center;
   gap: 8px;
   font-size: 12px;
+  color: #8892b0;
+}
+
+/* ShakeMap loading spinner (separate) */
+.shakemap-loading-spinner {
+  position: absolute;
+  top: 110px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: rgba(26, 26, 46, 0.8);
+  padding: 6px 14px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
   color: #8892b0;
 }
 
@@ -740,9 +849,7 @@ export default {
   cursor: pointer;
   font-size: 13px;
 }
-.retry-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
+.retry-btn:hover { background: rgba(255, 255, 255, 0.3); }
 
 /* Offline banner */
 .offline-banner {
@@ -796,10 +903,7 @@ export default {
 .locate-btn { top: 64px; right: 16px; }
 .share-btn { top: 112px; right: 16px; }
 
-.refresh-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Last updated */
 .last-updated {
@@ -847,16 +951,9 @@ export default {
   text-align: center;
 }
 
-.felt-dialog h3 {
-  color: #64ffda;
-  margin-bottom: 8px;
-}
+.felt-dialog h3 { color: #64ffda; margin-bottom: 8px; }
 
-.felt-event-info {
-  color: #ccd6f6;
-  font-size: 14px;
-  margin-bottom: 16px;
-}
+.felt-event-info { color: #ccd6f6; font-size: 14px; margin-bottom: 16px; }
 
 .felt-options {
   display: flex;
@@ -876,14 +973,9 @@ export default {
   font-size: 13px;
   transition: background 0.2s;
 }
-.felt-btn:hover {
-  background: #2e4a6b;
-}
+.felt-btn:hover { background: #2e4a6b; }
 
-.felt-note {
-  color: #8892b0;
-  margin-bottom: 12px;
-}
+.felt-note { color: #8892b0; margin-bottom: 12px; }
 
 .felt-close {
   background: transparent;
@@ -894,7 +986,5 @@ export default {
   cursor: pointer;
   font-size: 13px;
 }
-.felt-close:hover {
-  background: rgba(136, 146, 176, 0.1);
-}
+.felt-close:hover { background: rgba(136, 146, 176, 0.1); }
 </style>

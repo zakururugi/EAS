@@ -4,7 +4,9 @@
       <h3>📊 Shaking Timeline</h3>
       <button class="close-btn" @click="$emit('close')">✕</button>
     </div>
-    <canvas ref="chartCanvas"></canvas>
+    <div class="timeline-chart-wrapper">
+      <canvas ref="chartCanvas"></canvas>
+    </div>
     <div class="timeline-legend">
       <span class="legend-p"><span class="dot dot-p"></span>P‑wave arrival</span>
       <span class="legend-s"><span class="dot dot-s"></span>S‑wave arrival</span>
@@ -33,6 +35,15 @@
         <span class="stat-value">{{ timelineData.duration }}s</span>
       </div>
     </div>
+
+    <!-- Play/Pause button -->
+    <div class="timeline-play-controls">
+      <button class="play-btn" @click="togglePlay" :disabled="!timelineData">
+        {{ isPlaying ? '⏸️ Pause' : '▶️ Play' }}
+      </button>
+      <span class="play-time" v-if="isPlaying">Cursor: {{ playCursorTime.toFixed(1) }}s</span>
+    </div>
+
     <div class="timeline-controls" v-if="historicalQuakes.length">
       <label>Compare with historical quake:</label>
       <select v-model="selectedHistoricalId" @change="loadHistorical">
@@ -67,7 +78,6 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 
 /**
  * Calculate P-wave and S-wave arrival times (seconds after origin).
- * P-wave ~6 km/s, S-wave ~3.5 km/s, depth adds a small vertical-travel delay.
  */
 function calculateArrivalTimes(distanceKm, depthKm) {
   const pTravel = distanceKm / 6.0;
@@ -84,7 +94,7 @@ function calculateArrivalTimes(distanceKm, depthKm) {
  */
 function estimateMMI(mag, distanceKm) {
   let mmi = 1.5 * mag - 3.2 * Math.log10(Math.max(1, distanceKm)) + 2.5;
-  return Math.min(10, Math.max(0.5, mmi));   // never go below 0.5 for felt events
+  return Math.min(10, Math.max(0.5, mmi));
 }
 
 /**
@@ -150,6 +160,8 @@ async function fetchHistoricalEvents(lat, lon, radiusKm = 50) {
       place: f.properties.place,
     }));
   } catch {
+    // Show toast-like notification in console if fails
+    console.warn('[Timeline] Could not load historical data – using cached only.');
     return [];
   }
 }
@@ -169,6 +181,10 @@ export default {
     const historicalQuakes = ref([]);
     const selectedHistoricalId = ref('');
     const timelineData = ref(null);
+    const isPlaying = ref(false);
+    const playCursorTime = ref(0);
+    let playAnimId = null;
+    let playStartTime = 0;
 
     function renderChart() {
       if (!chartCanvas.value || !props.event) return;
@@ -199,7 +215,7 @@ export default {
         },
         options: {
           responsive: true,
-          maintainAspectRatio: true,
+          maintainAspectRatio: false,  // Mobile-friendly
           animation: { duration: 600 },
           interaction: { intersect: false, mode: 'index' },
           plugins: {
@@ -285,6 +301,19 @@ export default {
                     padding: 3,
                   },
                 },
+                // Play cursor annotation (initially hidden)
+                playCursor: {
+                  type: 'line',
+                  xMin: 0,
+                  xMax: 0,
+                  borderColor: '#ffffff',
+                  borderWidth: 2,
+                  borderDash: [3, 3],
+                  label: {
+                    display: false,
+                    content: '',
+                  },
+                },
               },
             },
           },
@@ -316,27 +345,93 @@ export default {
       });
     }
 
+    function togglePlay() {
+      if (isPlaying.value) {
+        stopPlay();
+      } else {
+        startPlay();
+      }
+    }
+
+    function startPlay() {
+      if (!chart || !timelineData.value) return;
+      isPlaying.value = true;
+      playCursorTime.value = 0;
+      playStartTime = performance.now();
+      animatePlay();
+    }
+
+    function stopPlay() {
+      isPlaying.value = false;
+      if (playAnimId) {
+        cancelAnimationFrame(playAnimId);
+        playAnimId = null;
+      }
+      // Reset cursor to start
+      if (chart) {
+        const playCursor = chart.options.plugins.annotation.annotations.playCursor;
+        if (playCursor) {
+          playCursor.xMin = 0;
+          playCursor.xMax = 0;
+          chart.update();
+        }
+      }
+      playCursorTime.value = 0;
+    }
+
+    function animatePlay() {
+      if (!chart || !timelineData.value) return;
+      const duration = timelineData.value.duration;
+      const elapsed = (performance.now() - playStartTime) / 1000 * 2; // 2x speed for demo
+      const currentTime = Math.min(elapsed, duration);
+      playCursorTime.value = currentTime;
+
+      const playCursor = chart.options.plugins.annotation.annotations.playCursor;
+      if (playCursor) {
+        // Find nearest label index
+        const labels = chart.data.labels;
+        let idx = 0;
+        for (let i = 0; i < labels.length; i++) {
+          if (parseFloat(labels[i]) <= currentTime) idx = i;
+        }
+        const label = labels[idx] || '0';
+        playCursor.xMin = label;
+        playCursor.xMax = label;
+        playCursor.label = {
+          display: true,
+          content: `⏺ ${currentTime.toFixed(1)}s`,
+          position: 'end',
+          backgroundColor: 'rgba(255, 255, 255, 0.8)',
+          color: '#000',
+          font: { size: 9, weight: 'bold' },
+          padding: 3,
+        };
+        chart.update();
+      }
+
+      if (currentTime < duration) {
+        playAnimId = requestAnimationFrame(animatePlay);
+      } else {
+        stopPlay();
+      }
+    }
+
     async function loadHistorical() {
       if (!selectedHistoricalId.value || !props.event) {
-        // If deselected, remove any historical overlay
         if (chart && chart.data.datasets.length > 1) {
           chart.data.datasets.pop();
           chart.update();
         }
         return;
       }
-      // If already loaded, just re-add or remove
-      // When a historical quake is selected, generate its timeline and overlay it
       const hist = historicalQuakes.value.find((q) => q.id === selectedHistoricalId.value);
       if (!hist) return;
 
-      // Re-use the same distance estimate for the historical quake at the same location
       const distanceKm = props.userDistance || 100;
       const histEvent = { magnitude: hist.mag, depth: props.event.depth || 10 };
       const histTl = generateTimeline(histEvent, distanceKm);
 
       if (chart) {
-        // Remove existing historical overlay if present
         if (chart.data.datasets.length > 1) {
           chart.data.datasets.pop();
         }
@@ -360,7 +455,6 @@ export default {
       await nextTick();
       if (props.event) {
         renderChart();
-        // Fetch historical events near the same coordinates
         if (props.event.latitude && props.event.longitude) {
           historicalQuakes.value = await fetchHistoricalEvents(
             props.event.latitude,
@@ -375,6 +469,7 @@ export default {
       () => props.event,
       async (newEvent) => {
         if (newEvent) {
+          stopPlay(); // Stop any ongoing animation
           renderChart();
           if (newEvent.latitude && newEvent.longitude) {
             historicalQuakes.value = await fetchHistoricalEvents(
@@ -390,11 +485,15 @@ export default {
     watch(
       () => props.userDistance,
       () => {
-        if (props.event && chartCanvas.value) renderChart();
+        if (props.event && chartCanvas.value) {
+          stopPlay();
+          renderChart();
+        }
       }
     );
 
     onBeforeUnmount(() => {
+      stopPlay();
       if (chart) {
         chart.destroy();
         chart = null;
@@ -412,6 +511,9 @@ export default {
       selectedHistoricalId,
       loadHistorical,
       formatDate,
+      isPlaying,
+      playCursorTime,
+      togglePlay,
     };
   },
 };
@@ -446,6 +548,13 @@ export default {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
+}
+
+/* Chart wrapper for responsive sizing */
+.timeline-chart-wrapper {
+  width: 100%;
+  height: 200px;
+  position: relative;
 }
 
 .close-btn {
@@ -508,6 +617,36 @@ export default {
   color: #ccd6f6;
   font-weight: 700;
   font-size: 13px;
+}
+
+/* Play controls */
+.timeline-play-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.play-btn {
+  background: #233554;
+  color: #64ffda;
+  border: 1px solid #2e4a6b;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+.play-btn:hover:not(:disabled) {
+  background: #2e4a6b;
+}
+.play-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.play-time {
+  font-size: 11px;
+  color: #8892b0;
 }
 
 .timeline-controls {

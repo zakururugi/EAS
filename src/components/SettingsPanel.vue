@@ -1,5 +1,5 @@
 <template>
-  <aside class="settings-panel">
+  <aside class="settings-panel" @click.stop>
     <div class="settings-header">
       <h2>Settings</h2>
       <button class="close-btn" @click="$emit('close')">✕</button>
@@ -7,7 +7,7 @@
 
     <div class="settings-content">
       <!-- ============================================ -->
-      <!-- Min Magnitude -->
+      <!-- Min Magnitude (API filter) -->
       <!-- ============================================ -->
       <section class="setting-section">
         <h3>Minimum Magnitude</h3>
@@ -23,6 +23,58 @@
             class="mag-slider"
           />
           <span class="slider-value">M{{ minMagnitude.toFixed(1) }}</span>
+        </div>
+      </section>
+
+      <!-- ============================================ -->
+      <!-- Map Marker Magnitude Filter (client-side) -->
+      <!-- ============================================ -->
+      <section class="setting-section">
+        <h3>Show markers ≥ M</h3>
+        <p class="setting-desc">Filter earthquake markers on the map (sidebar always shows all)</p>
+        <div class="slider-group">
+          <input
+            type="range"
+            :min="2"
+            :max="9"
+            :step="0.5"
+            :value="mapMinMagnitude"
+            @input="$emit('update:map-min-magnitude', parseFloat($event.target.value))"
+            class="mag-slider"
+          />
+          <span class="slider-value">M{{ mapMinMagnitude.toFixed(1) }}</span>
+        </div>
+      </section>
+
+      <!-- ============================================ -->
+      <!-- Soil Type (for ShakeMap amplification) -->
+      <!-- ============================================ -->
+      <section class="setting-section">
+        <h3>Soil Type</h3>
+        <p class="setting-desc">Affects ShakeMap intensity contours (site amplification factor)</p>
+        <select class="soil-select" :value="soilType" @change="$emit('update:soil-type', $event.target.value)">
+          <option value="1.0">Rock (1.0x)</option>
+          <option value="1.2">Stiff Soil (1.2x)</option>
+          <option value="1.5">Soft Soil (1.5x)</option>
+        </select>
+      </section>
+
+      <!-- ============================================ -->
+      <!-- Follow My Location -->
+      <!-- ============================================ -->
+      <section class="setting-section">
+        <h3>Location Tracking</h3>
+        <p class="setting-desc">Continuously update your position on the map</p>
+        <div class="toggle-group">
+          <label class="toggle-label">
+            <span>Follow my location</span>
+            <button
+              :class="['toggle-switch', { active: followLocation }]"
+              @click="$emit('update:follow-location', !followLocation)"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </label>
         </div>
       </section>
 
@@ -56,7 +108,22 @@
           ✅ Notifications enabled
         </div>
         <div v-else-if="fcmStatus === 'denied'" class="status-msg error">
-          ⛔ Notification permission denied. Please update your browser settings.
+          <span>⛔ Notification permission denied.</span>
+          <button class="help-toggle-btn" @click="showFcmHelp = !showFcmHelp">
+            {{ showFcmHelp ? 'Hide help' : 'Show help' }}
+          </button>
+          <div v-if="showFcmHelp" class="fcm-help">
+            <p><strong>To enable notifications:</strong></p>
+            <ol>
+              <li>Click the lock/info icon in your browser's address bar</li>
+              <li>Find "Notifications" in the site permissions list</li>
+              <li>Change the setting to "Allow"</li>
+              <li>Reload the page and try again</li>
+            </ol>
+            <p class="fcm-help-note">
+              <span>🔒</span> Notifications must be allowed at the browser level.
+            </p>
+          </div>
         </div>
         <div v-else-if="fcmStatus === 'error'" class="status-msg error">
           ❌ Failed to enable notifications. Check Firebase config.
@@ -167,6 +234,9 @@ export default {
   name: 'SettingsPanel',
   props: {
     minMagnitude: { type: Number, default: 4.5 },
+    mapMinMagnitude: { type: Number, default: 2.0 },
+    soilType: { type: String, default: '1.0' },
+    followLocation: { type: Boolean, default: true },
     pushEnabled: { type: Boolean, default: false },
     watchZones: { type: Array, default: () => [] },
     vapidKey: { type: String, default: '' },
@@ -176,6 +246,9 @@ export default {
   },
   emits: [
     'update:min-magnitude',
+    'update:map-min-magnitude',
+    'update:soil-type',
+    'update:follow-location',
     'toggle-push',
     'delete-zone',
     'close',
@@ -184,6 +257,11 @@ export default {
     'apply-dates',
     'reset-dates',
   ],
+  data() {
+    return {
+      showFcmHelp: false,
+    };
+  },
 };
 </script>
 
@@ -238,25 +316,15 @@ export default {
   padding: 8px 16px 24px;
 }
 
-.settings-content::-webkit-scrollbar {
-  width: 6px;
-}
-.settings-content::-webkit-scrollbar-track {
-  background: transparent;
-}
-.settings-content::-webkit-scrollbar-thumb {
-  background: #233554;
-  border-radius: 3px;
-}
+.settings-content::-webkit-scrollbar { width: 6px; }
+.settings-content::-webkit-scrollbar-track { background: transparent; }
+.settings-content::-webkit-scrollbar-thumb { background: #233554; border-radius: 3px; }
 
 .setting-section {
   padding: 16px 0;
   border-bottom: 1px solid rgba(35, 53, 84, 0.5);
 }
-
-.setting-section:last-child {
-  border-bottom: none;
-}
+.setting-section:last-child { border-bottom: none; }
 
 h3 {
   font-size: 14px;
@@ -318,10 +386,23 @@ h3 {
   text-align: center;
 }
 
-/* Toggle */
-.toggle-group {
-  margin-bottom: 8px;
+/* Soil select */
+.soil-select {
+  width: 100%;
+  background: #0f0f23;
+  color: #ccd6f6;
+  border: 1px solid #233554;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
 }
+.soil-select:focus { border-color: #64ffda; }
+.soil-select option { background: #0f0f23; color: #ccd6f6; }
+
+/* Toggle */
+.toggle-group { margin-bottom: 8px; }
 
 .toggle-label {
   display: flex;
@@ -343,9 +424,7 @@ h3 {
   padding: 0;
 }
 
-.toggle-switch.active {
-  background: #64ffda;
-}
+.toggle-switch.active { background: #64ffda; }
 
 .toggle-knob {
   position: absolute;
@@ -358,14 +437,34 @@ h3 {
   transition: transform 0.2s;
 }
 
-.toggle-switch.active .toggle-knob {
-  transform: translateX(20px);
-}
+.toggle-switch.active .toggle-knob { transform: translateX(20px); }
+.toggle-switch:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.toggle-switch:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* Help toggle */
+.help-toggle-btn {
+  background: transparent;
+  border: 1px solid #ff1744;
+  color: #ff1744;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  margin-left: 8px;
 }
+.help-toggle-btn:hover { background: rgba(255, 23, 68, 0.1); }
+
+.fcm-help {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 23, 68, 0.05);
+  border: 1px solid rgba(255, 23, 68, 0.2);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #ccd6f6;
+}
+.fcm-help ol { margin: 4px 0; padding-left: 18px; }
+.fcm-help li { margin: 2px 0; }
+.fcm-help-note { margin-top: 4px; color: #8892b0; }
 
 /* Status messages */
 .status-msg {
@@ -416,11 +515,7 @@ h3 {
   color: #64ffda;
 }
 
-.zone-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
+.zone-list { display: flex; flex-direction: column; gap: 6px; }
 
 .zone-item {
   display: flex;
@@ -432,27 +527,10 @@ h3 {
   padding: 10px 12px;
 }
 
-.zone-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.zone-name {
-  font-size: 13px;
-  color: #ccd6f6;
-  font-weight: 500;
-}
-
-.zone-mag {
-  font-size: 11px;
-  color: #64ffda;
-}
-
-.zone-points {
-  font-size: 10px;
-  color: #8892b0;
-}
+.zone-info { display: flex; flex-direction: column; gap: 2px; }
+.zone-name { font-size: 13px; color: #ccd6f6; font-weight: 500; }
+.zone-mag { font-size: 11px; color: #64ffda; }
+.zone-points { font-size: 10px; color: #8892b0; }
 
 .delete-zone-btn {
   background: transparent;
@@ -464,30 +542,13 @@ h3 {
   color: #8892b0;
   transition: color 0.2s, background 0.2s;
 }
-
-.delete-zone-btn:hover {
-  color: #ff1744;
-  background: rgba(255, 23, 68, 0.1);
-}
+.delete-zone-btn:hover { color: #ff1744; background: rgba(255, 23, 68, 0.1); }
 
 /* Date Range */
-.date-range-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+.date-range-group { display: flex; flex-direction: column; gap: 8px; }
 
-.date-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.date-field label {
-  font-size: 11px;
-  color: #8892b0;
-  font-weight: 500;
-}
+.date-field { display: flex; flex-direction: column; gap: 4px; }
+.date-field label { font-size: 11px; color: #8892b0; font-weight: 500; }
 
 .date-input {
   background: #0f0f23;
@@ -500,16 +561,9 @@ h3 {
   cursor: pointer;
   color-scheme: dark;
 }
+.date-input:focus { border-color: #64ffda; }
 
-.date-input:focus {
-  border-color: #64ffda;
-}
-
-.date-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-}
+.date-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 .settings-btn {
   flex: 1;
@@ -522,38 +576,14 @@ h3 {
   transition: all 0.2s;
 }
 
-.settings-btn.primary {
-  background: #64ffda;
-  color: #0f0f23;
-}
+.settings-btn.primary { background: #64ffda; color: #0f0f23; }
+.settings-btn.primary:hover:not(:disabled) { background: #45e0be; }
 
-.settings-btn.primary:hover:not(:disabled) {
-  background: #45e0be;
-}
-
-.settings-btn.secondary {
-  background: transparent;
-  color: #8892b0;
-  border: 1px solid #233554;
-}
-
-.settings-btn.secondary:hover:not(:disabled) {
-  border-color: #64ffda;
-  color: #64ffda;
-}
-
-.settings-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+.settings-btn.secondary { background: transparent; color: #8892b0; border: 1px solid #233554; }
+.settings-btn.secondary:hover:not(:disabled) { border-color: #64ffda; color: #64ffda; }
+.settings-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* About section */
-.about-section a {
-  color: #64ffda;
-  text-decoration: none;
-}
-
-.about-section a:hover {
-  text-decoration: underline;
-}
+.about-section a { color: #64ffda; text-decoration: none; }
+.about-section a:hover { text-decoration: underline; }
 </style>

@@ -1,13 +1,14 @@
 /**
  * Offline cache for earthquake data.
  * Uses IndexedDB via a simple wrapper for storing and retrieving
- * recent events and ShakeMap data when the network is unavailable.
+ * recent events, ShakeMap data, and watch zones when the network is unavailable.
  */
 
 const DB_NAME = 'quake-alert-cache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;  // Incremented for watchZones store
 const EVENTS_STORE = 'events';
 const SHAKEMAP_STORE = 'shakemaps';
+const ZONES_STORE = 'watchZones';
 const MAX_EVENTS = 100;
 const MAX_SHAKEMAPS = 5;
 
@@ -34,6 +35,10 @@ function openDB() {
       if (!database.objectStoreNames.contains(SHAKEMAP_STORE)) {
         database.createObjectStore(SHAKEMAP_STORE, { keyPath: 'eventId' });
       }
+
+      if (!database.objectStoreNames.contains(ZONES_STORE)) {
+        database.createObjectStore(ZONES_STORE, { keyPath: 'id' });
+      }
     };
 
     request.onsuccess = (event) => {
@@ -58,14 +63,12 @@ export async function cacheEvents(events) {
     const tx = database.transaction(EVENTS_STORE, 'readwrite');
     const store = tx.objectStore(EVENTS_STORE);
 
-    // Clear old events beyond the limit
     const count = await new Promise((resolve) => {
       const req = store.count();
       req.onsuccess = () => resolve(req.result);
     });
 
     if (count + events.length > MAX_EVENTS) {
-      // Get oldest entries and delete them
       const index = store.index('time');
       const range = IDBKeyRange.upperBound(Date.now());
       const cursorReq = index.openCursor(range);
@@ -82,14 +85,13 @@ export async function cacheEvents(events) {
       };
     }
 
-    // Save events
     for (const event of events) {
       store.put(event);
     }
 
     await new Promise((resolve) => {
       tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve(); // Silently fail
+      tx.onerror = () => resolve();
     });
   } catch (err) {
     console.warn('[Cache] Failed to cache events:', err.message);
@@ -109,7 +111,7 @@ export async function loadCachedEvents() {
 
     const events = await new Promise((resolve) => {
       const results = [];
-      const req = index.openCursor(null, 'prev'); // Newest first
+      const req = index.openCursor(null, 'prev');
       req.onsuccess = (event) => {
         const cursor = event.target.result;
         if (cursor) {
@@ -140,14 +142,12 @@ export async function cacheShakeMap(eventId, contours) {
     const tx = database.transaction(SHAKEMAP_STORE, 'readwrite');
     const store = tx.objectStore(SHAKEMAP_STORE);
 
-    // Check current count
     const count = await new Promise((resolve) => {
       const req = store.count();
       req.onsuccess = () => resolve(req.result);
     });
 
     if (count >= MAX_SHAKEMAPS) {
-      // Delete oldest entry (first key)
       const cursorReq = store.openCursor();
       cursorReq.onsuccess = (event) => {
         const cursor = event.target.result;
@@ -188,6 +188,66 @@ export async function loadCachedShakeMap(eventId) {
     return result?.data || null;
   } catch (err) {
     return null;
+  }
+}
+
+/**
+ * Cache watch zones for offline use.
+ * @param {Array} zones - Array of zone objects
+ */
+export async function cacheZones(zones) {
+  try {
+    const database = await openDB();
+    const tx = database.transaction(ZONES_STORE, 'readwrite');
+    const store = tx.objectStore(ZONES_STORE);
+
+    const clearReq = store.clear();
+    await new Promise((resolve) => {
+      clearReq.onsuccess = () => resolve();
+      clearReq.onerror = () => resolve();
+    });
+
+    for (const zone of zones) {
+      store.put(zone);
+    }
+
+    await new Promise((resolve) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch (err) {
+    console.warn('[Cache] Failed to cache zones:', err.message);
+  }
+}
+
+/**
+ * Load cached watch zones.
+ * @returns {Promise<Array>}
+ */
+export async function loadCachedZones() {
+  try {
+    const database = await openDB();
+    const tx = database.transaction(ZONES_STORE, 'readonly');
+    const store = tx.objectStore(ZONES_STORE);
+
+    const zones = await new Promise((resolve) => {
+      const results = [];
+      const req = store.openCursor();
+      req.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          results.push(cursor.value);
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+      req.onerror = () => resolve(results);
+    });
+
+    return zones;
+  } catch (err) {
+    return [];
   }
 }
 
