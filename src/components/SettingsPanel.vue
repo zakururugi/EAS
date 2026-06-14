@@ -151,7 +151,8 @@
           Earthquake Alert System v1.0.0
         </p>
         <p class="setting-desc">
-          Data source: <a href="https://earthquake.usgs.gov" target="_blank" rel="noopener">USGS</a>
+          Primary source: <a href="https://earthquake.phivolcs.dost.gov.ph/" target="_blank" rel="noopener">PHIVOLCS</a>
+          (supplemental data from <a href="https://earthquake.usgs.gov" target="_blank" rel="noopener">USGS</a>)
         </p>
         <p class="setting-desc">
           Powered by Vue 3, Leaflet, Firebase, and Vercel.

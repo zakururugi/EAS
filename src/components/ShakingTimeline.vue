@@ -84,7 +84,7 @@ function calculateArrivalTimes(distanceKm, depthKm) {
  */
 function estimateMMI(mag, distanceKm) {
   let mmi = 1.5 * mag - 3.2 * Math.log10(Math.max(1, distanceKm)) + 2.5;
-  return Math.min(10, Math.max(1, mmi));
+  return Math.min(10, Math.max(0.5, mmi));   // never go below 0.5 for felt events
 }
 
 /**

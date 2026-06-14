@@ -62,6 +62,7 @@ export default {
     let resizeObserver = null;
     let legendControl = null;
     let magnitudeLegendControl = null;
+    let userMarker = null;
 
     const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
     const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
@@ -267,6 +268,8 @@ export default {
       }
     }
 
+    let autoFitShakemap = true;   // only fit bounds on first load or when button clicked
+
     function renderShakeMap() {
       if (!shakemapLayerGroup) return;
       shakemapLayerGroup.clearLayers();
@@ -301,9 +304,15 @@ export default {
 
       shakemapLayerGroup.addLayer(contourLayer);
 
-      if (contourLayer.getBounds().isValid()) {
+      if (contourLayer.getBounds().isValid() && autoFitShakemap) {
         map.fitBounds(contourLayer.getBounds(), { padding: [50, 50], maxZoom: 10 });
+        autoFitShakemap = false;
       }
+    }
+
+    // Reset autoFitShakemap when a new event is selected (via the "Show ShakeMap" popup button)
+    function resetAutoFitShakemap() {
+      autoFitShakemap = true;
     }
 
     function getContourStyle(feature) {
@@ -397,17 +406,28 @@ export default {
       nextTick(() => renderZones());
     }, { deep: true });
 
+    // Update user location marker whenever userLocation changes
     watch(() => props.userLocation, (loc) => {
-      if (loc && loc.lat != null && loc.lng != null) {
-        nextTick(() => {
-          isFlyingToSelected = true;
-          map.flyTo([loc.lat, loc.lng], 8, { duration: 1.5 });
-          map.once('moveend', () => {
-            isFlyingToSelected = false;
-          });
-        });
+      if (!map) return;
+      // Remove existing user marker
+      if (userMarker) {
+        map.removeLayer(userMarker);
+        userMarker = null;
       }
-    }, { immediate: false });
+      if (loc && loc.lat != null && loc.lng != null) {
+        // Add a pulsing location marker
+        userMarker = L.marker([loc.lat, loc.lng], {
+          icon: L.divIcon({
+            className: 'user-location-marker',
+            html: '<div class="user-location-dot"></div><div class="user-location-pulse"></div>',
+            iconSize: [24, 24],
+            iconAnchor: [12, 12],
+          }),
+          zIndexOffset: 1000,
+        }).addTo(map);
+        userMarker.bindTooltip('You are here', { permanent: false, direction: 'top' });
+      }
+    }, { immediate: true });
 
     onMounted(() => {
       initMap();
@@ -470,6 +490,23 @@ export default {
 
 .shakemap-tooltip { background: rgba(26, 26, 46, 0.9) !important; color: #ccd6f6 !important; border: 1px solid #233554 !important; font-size: 11px !important; padding: 4px 8px !important; }
 .zone-tooltip { background: rgba(26, 26, 46, 0.9) !important; color: #64ffda !important; border: 1px solid #64ffda !important; font-size: 11px !important; padding: 4px 8px !important; }
+
+/* User location marker */
+.user-location-marker { background: none !important; border: none !important; }
+.user-location-dot {
+  width: 16px; height: 16px; background: #64ffda; border-radius: 50%;
+  border: 3px solid #1a1a2e; box-shadow: 0 0 4px rgba(100, 255, 218, 0.8);
+  position: absolute; top: 4px; left: 4px; z-index: 2;
+}
+.user-location-pulse {
+  width: 24px; height: 24px; background: rgba(100, 255, 218, 0.3); border-radius: 50%;
+  animation: user-loc-pulse 2s infinite; position: absolute; top: 0; left: 0;
+}
+@keyframes user-loc-pulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.5); opacity: 0.2; }
+  100% { transform: scale(1); opacity: 0.6; }
+}
 
 .leaflet-draw-toolbar a { background-color: #1a1a2e !important; background-image: url('https://unpkg.com/leaflet-draw@1.0.4/dist/images/spritesheet.png') !important; }
 .leaflet-draw-toolbar a:hover { background-color: #16213e !important; }

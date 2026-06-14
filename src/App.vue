@@ -232,6 +232,7 @@ export default {
         // Check if any events have source='PHIVOLCS'
         hasPHIVOLCS.value = allEvents.some((e) => e.source === 'PHIVOLCS');
 
+        // Keep old events until new data is ready - prevents flash of empty sidebar
         events.value = allEvents;
         lastUpdated.value = Date.now();
 
@@ -242,6 +243,8 @@ export default {
       } catch (err) {
         console.error('[App] Failed to load events:', err.message);
         error.value = err.message;
+
+        // Keep existing events on error instead of clearing them
 
         // Try loading from cache if offline
         if (!navigator.onLine) {
@@ -271,7 +274,10 @@ export default {
 
     /**
      * Generate approximate ShakeMap intensity zones based on magnitude and depth.
-     * Uses empirically-adjusted concentric circles with MMI labels.
+     * Uses an empirically-based attenuation formula (USGS-style) for realistic radii.
+     *
+     * Attenuation model: distance(km) = 10^((mag - log10(MMI)) / c)
+     * where c ≈ 1.8 is the attenuation coefficient.
      *
      * Real-world MMI at epicenter for shallow quakes (~10km depth):
      *   M4.8 → MMI ~ 5-6 (Moderate to Strong)
@@ -291,33 +297,28 @@ export default {
       // Don't show for small events that can't be felt
       if (!lat || !lng || mag < 4.5) return null;
 
-      // Compute epicentral MMI — improved empirical formula
-      // Based on PHIVOLCS and USGS intensity observations
-      const epicenterMmi = Math.min(10, Math.max(1, Math.round(1.5 * mag - 2.0)));
-      // For mag < 4.5 we already returned null above
-      if (epicenterMmi < 2) return null;
-
-      // Depth factor: deeper = same MMI spread over wider area but weaker at center
-      const depthFactor = Math.min(3, Math.max(0.8, depth / 8));
-
-      // MMI levels and their approximate radii from epicenter (km)
-      // Attenuation model: radius roughly doubles every 2 MMI steps
-      const levels = [
-        { mmi: epicenterMmi, radius: Math.max(epicenterMmi * 2, 3) },
-        { mmi: epicenterMmi - 1, radius: Math.max(epicenterMmi * 4, 8) },
-        { mmi: epicenterMmi - 2, radius: Math.max(epicenterMmi * 8, 15) },
-        { mmi: Math.max(1, epicenterMmi - 3), radius: Math.max(epicenterMmi * 16, 30) },
-      ];
+      // MMI levels to render (filter to realistic ones for this magnitude)
+      const levels = [8, 7, 6, 5, 4, 3, 2].filter(mmi => mmi <= 1.5 * mag - 1);
+      if (levels.length === 0) return null;
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
 
+      // Attenuation coefficient (empirical, USGS-style)
+      const c = 1.8;
+
+      // Depth adjustment: deeper quakes reduce surface intensity
+      const depthFactor = Math.min(1.2, 10 / (depth + 5));
+
       const features = [];
 
-      for (const level of levels) {
-        if (level.mmi < 1) continue;
+      for (const mmi of levels) {
+        // Distance in km where expected MMI equals this level
+        let radiusKm = Math.pow(10, (mag - Math.log10(mmi)) / c);
+        radiusKm = Math.min(radiusKm, 400);  // cap at 400 km
+        if (radiusKm < 5) continue;
 
-        const radiusKm = level.radius * depthFactor;
-        if (radiusKm < 1) continue;
+        // Apply depth factor
+        radiusKm *= depthFactor;
 
         const radiusM = radiusKm * 1000;
         const points = [];
@@ -330,11 +331,11 @@ export default {
           points.push([lng + dLng, lat + dLat]);
         }
 
-        const desc = mmiDesc[level.mmi] || '';
+        const desc = mmiDesc[mmi] || '';
 
         features.push({
           type: 'Feature',
-          properties: { MMI: level.mmi, label: `MMI ${level.mmi} – ${desc}` },
+          properties: { MMI: mmi, label: `MMI ${mmi} – ${desc}` },
           geometry: {
             type: 'Polygon',
             coordinates: [points],
@@ -411,15 +412,28 @@ export default {
     }
 
     function jumpToMyLocation() {
-      if (userLocation.value && mapView.value) {
-        mapView.value.flyToLocation(
-          userLocation.value.lat,
-          userLocation.value.lng,
-          10
-        );
-      } else if (!userLocation.value) {
-        getUserLocation();
-      }
+      if (!navigator.geolocation) return;
+      // Re-fetch location every time the button is clicked for accuracy
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const newLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          userLocation.value = newLoc;
+          if (mapView.value) {
+            mapView.value.flyToLocation(newLoc.lat, newLoc.lng, 10);
+          }
+        },
+        () => {
+          // If location fetch fails and we have a cached location, jump to it
+          if (userLocation.value && mapView.value) {
+            mapView.value.flyToLocation(
+              userLocation.value.lat,
+              userLocation.value.lng,
+              10
+            );
+          }
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
     }
 
     async function shareEvent() {
