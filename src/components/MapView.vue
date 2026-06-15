@@ -225,14 +225,14 @@ export default {
       if (levels.length === 0) return;
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
-      const c = 1.8;
+      const c = 1.5;
       const depthFactor = Math.min(1.2, 10 / (depth + 5));
 
       const features = [];
 
       for (const mmi of levels) {
         let radiusKm = Math.pow(10, (mag - Math.log10(mmi)) / c);
-        radiusKm = Math.min(radiusKm, 400);
+        radiusKm = Math.min(radiusKm, 1000);
         if (radiusKm < 5) continue;
         radiusKm *= depthFactor;
         radiusKm *= Math.sqrt(siteAmp);
@@ -328,7 +328,8 @@ export default {
       const mag = event?.magnitude || 5;
       const distance = 100;
 
-      const amplitude = Math.min(20, Math.max(5, mag * 2 - distance / 100));
+      // Logarithmic amplitude scaling: larger magnitudes produce visibly stronger wiggles
+      const amplitude = Math.min(30, Math.max(8, Math.pow(mag, 1.5) / 8));
       const pWaveFreq = 12;
       const sWaveFreq = 4;
       const duration = 5000;

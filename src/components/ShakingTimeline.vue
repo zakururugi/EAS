@@ -90,10 +90,12 @@ function calculateArrivalTimes(distanceKm, depthKm) {
 }
 
 /**
- * Estimate MMI from magnitude and distance using a simple attenuation formula.
+ * Estimate MMI from magnitude and distance using the same attenuation formula as ShakeMap.
+ * Derived from: radius = 10^((mag - log10(mmi)) / c)  =>  mmi = 10^(mag - c * log10(distance))
  */
 function estimateMMI(mag, distanceKm) {
-  let mmi = 1.5 * mag - 3.2 * Math.log10(Math.max(1, distanceKm)) + 2.5;
+  const c = 1.5;
+  let mmi = Math.pow(10, mag - c * Math.log10(Math.max(1, distanceKm)));
   return Math.min(10, Math.max(0.5, mmi));
 }
 
@@ -243,8 +245,8 @@ export default {
               annotations: {
                 pWaveLine: {
                   type: 'line',
-                  xMin: tl.pArrival,
-                  xMax: tl.pArrival,
+                  xMin: parseFloat(tl.pArrival),
+                  xMax: parseFloat(tl.pArrival),
                   borderColor: '#00e676',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -260,8 +262,8 @@ export default {
                 },
                 sWaveLine: {
                   type: 'line',
-                  xMin: tl.sArrival,
-                  xMax: tl.sArrival,
+                  xMin: parseFloat(tl.sArrival),
+                  xMax: parseFloat(tl.sArrival),
                   borderColor: '#ffd600',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -277,8 +279,8 @@ export default {
                 },
                 peakLine: {
                   type: 'line',
-                  xMin: tl.peakTime,
-                  xMax: tl.peakTime,
+                  xMin: parseFloat(tl.peakTime),
+                  xMax: parseFloat(tl.peakTime),
                   borderColor: '#ff1744',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -403,8 +405,8 @@ export default {
       const playCursor = chart.options.plugins.annotation.annotations.playCursor;
       if (playCursor) {
         // Use numeric time values directly for xMin/xMax
-        playCursor.xMin = String(currentTime);
-        playCursor.xMax = String(currentTime);
+        playCursor.xMin = currentTime;
+        playCursor.xMax = currentTime;
         playCursor.label = {
           display: true,
           content: `⏺ ${currentTime.toFixed(1)}s`,
