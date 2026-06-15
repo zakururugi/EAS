@@ -320,14 +320,15 @@ export default {
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
 
-      const c = 1.8; // attenuation coefficient
-      const depthFactor = Math.min(1.2, 10 / (depth + 5));
+      const c = 1.5; // attenuation coefficient (USGS-style, consistent with MapView)
+      // Depth factor: deeper quakes spread energy over wider area → larger contour radii
+      const depthFactor = Math.min(1.5, 1 + depth / 30);
 
       const features = [];
 
       for (const mmi of levels) {
         let radiusKm = Math.pow(10, (mag - Math.log10(mmi)) / c);
-        radiusKm = Math.min(radiusKm, 400);  // cap at 400 km
+        radiusKm = Math.min(radiusKm, 1000);  // cap at 1000 km
         if (radiusKm < 5) continue;
 
         // Apply depth factor
@@ -574,28 +575,49 @@ export default {
       loadEvents();
     }
 
+    /**
+     * Compute Haversine distance from user to event epicenter.
+     * Returns distance in km, or null if unable to compute.
+     */
+    function computeUserDistance(event) {
+      const loc = userLocation.value;
+      if (!loc || loc.lat == null || loc.lng == null || !event) return null;
+      const R = 6371;
+      const toRad = (d) => (d * Math.PI) / 180;
+      const lat1 = toRad(loc.lat);
+      const lat2 = toRad(event.latitude);
+      const dLat = toRad(event.latitude - loc.lat);
+      const dLng = toRad(event.longitude - loc.lng);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
     function openTimeline() {
       if (!selectedEvent.value) {
         alert('Select an earthquake first.');
         return;
       }
-      const loc = userLocation.value;
-      if (!loc || loc.lat == null || loc.lng == null) {
+      const dist = computeUserDistance(selectedEvent.value);
+      if (dist == null) {
         alert('Enable location access to compute your distance to the epicenter.');
         return;
       }
-      const R = 6371;
-      const toRad = (d) => (d * Math.PI) / 180;
-      const lat1 = toRad(loc.lat);
-      const lat2 = toRad(selectedEvent.value.latitude);
-      const dLat = toRad(selectedEvent.value.latitude - loc.lat);
-      const dLng = toRad(selectedEvent.value.longitude - loc.lng);
-      const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-      userDistance.value = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      userDistance.value = dist;
       showTimeline.value = true;
     }
+
+    // When the selected event changes while the timeline is open,
+    // recalculate the user distance so P/S/Peak markers update correctly
+    watch(selectedEvent, (newEvent) => {
+      if (showTimeline.value && newEvent) {
+        const dist = computeUserDistance(newEvent);
+        if (dist != null) {
+          userDistance.value = dist;
+        }
+      }
+    });
 
     // Listen for custom events
     function setupCustomEvents() {

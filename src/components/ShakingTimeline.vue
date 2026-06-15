@@ -397,16 +397,18 @@ export default {
     function animatePlay() {
       if (!chart || !timelineData.value) return;
       const duration = timelineData.value.duration;
-      // 1x realtime speed for accuracy
-      const elapsed = (performance.now() - playStartTime) / 1000;
+      // Adaptive speed: play entire duration in ~8 seconds regardless of event length
+      const speedMultiplier = Math.max(1, duration / 8);
+      const elapsed = (performance.now() - playStartTime) / 1000 * speedMultiplier;
       const currentTime = Math.min(elapsed, duration);
       playCursorTime.value = currentTime;
 
       const playCursor = chart.options.plugins.annotation.annotations.playCursor;
       if (playCursor) {
         // Use numeric time values directly for xMin/xMax
-        playCursor.xMin = currentTime;
-        playCursor.xMax = currentTime;
+        // Use string labels (matching Chart.js category scale) for correct positioning
+        playCursor.xMin = currentTime.toFixed(1);
+        playCursor.xMax = currentTime.toFixed(1);
         playCursor.label = {
           display: true,
           content: `⏺ ${currentTime.toFixed(1)}s`,

@@ -226,7 +226,8 @@ export default {
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
       const c = 1.5;
-      const depthFactor = Math.min(1.2, 10 / (depth + 5));
+      // Depth factor: deeper quakes spread energy over wider area → larger contour radii
+      const depthFactor = Math.min(1.5, 1 + depth / 30);
 
       const features = [];
 
@@ -336,6 +337,13 @@ export default {
       const pWaveDuration = 200;
       const startTime = performance.now();
 
+      // Precompute noise array to avoid per-frame random flickering
+      const numPoints = Math.floor(w / 2);
+      const noiseBuffer = new Float32Array(numPoints);
+      for (let i = 0; i < numPoints; i++) {
+        noiseBuffer[i] = (Math.random() - 0.5) * 0.5;
+      }
+
       function draw() {
         const elapsed = performance.now() - startTime;
         const progress = Math.min(1, elapsed / duration);
@@ -357,7 +365,6 @@ export default {
         ctx.strokeStyle = '#00e676';
         ctx.lineWidth = 1.5;
 
-        const numPoints = Math.floor(w / 2);
         for (let i = 0; i < numPoints; i++) {
           const time = (i / numPoints) * duration * progress;
           const t = time / 1000;
@@ -369,7 +376,7 @@ export default {
             ? Math.sin(2 * Math.PI * sWaveFreq * t) * envelope
             : 0;
           const signal = (pWave + sWave) * amplitude;
-          const noise = (Math.random() - 0.5) * 0.5;
+          const noise = noiseBuffer[i]; // Use precomputed noise
           const y = midY + signal + noise;
           const x = (i / numPoints) * w * progress;
           if (i === 0) ctx.moveTo(x, y);
