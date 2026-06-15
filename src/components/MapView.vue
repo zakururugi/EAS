@@ -63,6 +63,9 @@ export default {
     let userMarker = null;
     let userAccuracyCircle = null;
     let seismogramAnimId = null;
+    // Store the last rendered shakeMap contours so we can render on demand
+    let pendingShakemapEventId = null;
+    let shakemapDataCache = null;
 
     const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
     const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>';
@@ -146,7 +149,12 @@ export default {
 
       map.on('click', () => {
         if (props.selectedEventId) emit('select-event', null);
+        // Also clear ShakeMap when map background is clicked
+        clearShakeMap();
       });
+
+      // Listen for the custom 'show-shakemap' event dispatched from popup buttons
+      document.addEventListener('show-shakemap', onShowShakeMap);
 
       setTimeout(() => map.invalidateSize(), 100);
 
@@ -155,6 +163,129 @@ export default {
           if (map) map.invalidateSize();
         });
         resizeObserver.observe(mapContainer.value);
+      }
+    }
+
+    function clearShakeMap() {
+      if (shakemapLayerGroup) {
+        shakemapLayerGroup.clearLayers();
+      }
+      if (legendControl && map) {
+        map.removeControl(legendControl);
+        legendControl = null;
+      }
+      pendingShakemapEventId = null;
+      shakemapDataCache = null;
+    }
+
+    /**
+     * On-demand ShakeMap rendering: only render when user clicks "Show ShakeMap" button.
+     * Generates contours using the provided generateApproximateShakeMap function on the event.
+     */
+    function onShowShakeMap(e) {
+      const eventId = e.detail;
+      if (!eventId) return;
+
+      // Find the event in props
+      const event = props.events.find((ev) => ev.id === eventId);
+      if (!event) return;
+
+      // Clear previous shakemap
+      shakemapLayerGroup.clearLayers();
+      if (legendControl && map) {
+        map.removeControl(legendControl);
+        legendControl = null;
+      }
+
+      // Generate the ShakeMap contours from the event data
+      const eventData = {
+        magnitude: event.magnitude,
+        depth: event.depth,
+        latitude: event.latitude,
+        longitude: event.longitude,
+        place: event.place,
+      };
+      generatedShakeMapForEvent(eventData);
+    }
+
+    /**
+     * Generate and render ShakeMap contours for an event locally.
+     * Uses the same formula as App.vue's generateApproximateShakeMap.
+     */
+    function generatedShakeMapForEvent(event) {
+      const mag = event.magnitude || 0;
+      const depth = event.depth || 10;
+      const lat = event.latitude;
+      const lng = event.longitude;
+      const siteAmp = props.soilType || 1.0;
+
+      if (!lat || !lng || mag < 4.5) return;
+
+      const levels = [8, 7, 6, 5, 4, 3, 2].filter(mmi => mmi <= 1.5 * mag - 1);
+      if (levels.length === 0) return;
+
+      const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
+      const c = 1.8;
+      const depthFactor = Math.min(1.2, 10 / (depth + 5));
+
+      const features = [];
+
+      for (const mmi of levels) {
+        let radiusKm = Math.pow(10, (mag - Math.log10(mmi)) / c);
+        radiusKm = Math.min(radiusKm, 400);
+        if (radiusKm < 5) continue;
+        radiusKm *= depthFactor;
+        radiusKm *= Math.sqrt(siteAmp);
+
+        const radiusM = radiusKm * 1000;
+        const points = [];
+        const segments = 32;
+
+        for (let j = 0; j <= segments; j++) {
+          const angle = (j / segments) * 2 * Math.PI;
+          const dLat = (radiusM / 111320) * Math.cos(angle);
+          const dLng = (radiusM / (111320 * Math.cos(lat * Math.PI / 180))) * Math.sin(angle);
+          points.push([lng + dLng, lat + dLat]);
+        }
+
+        const desc = mmiDesc[mmi] || '';
+        features.push({
+          type: 'Feature',
+          properties: { MMI: mmi, label: `MMI ${mmi} – ${desc}` },
+          geometry: { type: 'Polygon', coordinates: [points] },
+        });
+      }
+
+      // Render the contour layer
+      if (features.length === 0) return;
+
+      const contourLayer = L.geoJSON({
+        type: 'FeatureCollection',
+        features,
+      }, {
+        style: getContourStyle,
+        onEachFeature: (feature, layer) => {
+          if (feature.properties) {
+            const mmiVal = feature.properties.MMI;
+            const desc = mmiVal != null ? (MMI_DESCRIPTIONS[Math.round(mmiVal)] || 'Strong') : '';
+            const label = mmiVal != null ? `MMI ${mmiVal} (${desc})` : 'Intensity contour';
+            layer.bindTooltip(label, { sticky: true, className: 'shakemap-tooltip' });
+          }
+        },
+      });
+
+      shakemapLayerGroup.addLayer(contourLayer);
+
+      // Fit bounds with padding
+      if (contourLayer.getBounds().isValid()) {
+        map.fitBounds(contourLayer.getBounds(), { padding: [50, 50], maxZoom: 10 });
+      }
+
+      // Add legend
+      if (!legendControl) {
+        legendControl = L.control({ position: 'bottomright' });
+        legendControl.onAdd = shakemapLegend.onAdd;
+        legendControl.addTo(map);
       }
     }
 
@@ -188,26 +319,30 @@ export default {
       });
     }
 
-    function renderSeismogram(canvas) {
+    function renderSeismogram(canvas, event) {
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       const w = canvas.width;
       const h = canvas.height;
       const midY = h / 2;
-      let time = 0;
+      const mag = event?.magnitude || 5;
+      const distance = 100;
+
+      const amplitude = Math.min(20, Math.max(5, mag * 2 - distance / 100));
+      const pWaveFreq = 12;
+      const sWaveFreq = 4;
+      const duration = 5000;
+      const pWaveDuration = 200;
       const startTime = performance.now();
-      const duration = 5000; // 5 seconds
 
       function draw() {
         const elapsed = performance.now() - startTime;
         const progress = Math.min(1, elapsed / duration);
         ctx.clearRect(0, 0, w, h);
 
-        // Background
         ctx.fillStyle = '#0f0f23';
         ctx.fillRect(0, 0, w, h);
 
-        // Grid lines
         ctx.strokeStyle = 'rgba(35,53,84,0.4)';
         ctx.lineWidth = 0.5;
         for (let x = 0; x < w; x += 20) {
@@ -217,23 +352,30 @@ export default {
           ctx.stroke();
         }
 
-        // Seismogram line
         ctx.beginPath();
         ctx.strokeStyle = '#00e676';
         ctx.lineWidth = 1.5;
 
         const numPoints = Math.floor(w / 2);
         for (let i = 0; i < numPoints; i++) {
+          const time = (i / numPoints) * duration * progress;
+          const t = time / 1000;
+          const envelope = Math.exp(-t * 1.2);
+          const pWave = (time < pWaveDuration)
+            ? Math.sin(2 * Math.PI * pWaveFreq * t) * 0.8 * (1 - time / pWaveDuration)
+            : 0;
+          const sWave = (time >= pWaveDuration)
+            ? Math.sin(2 * Math.PI * sWaveFreq * t) * envelope
+            : 0;
+          const signal = (pWave + sWave) * amplitude;
+          const noise = (Math.random() - 0.5) * 0.5;
+          const y = midY + signal + noise;
           const x = (i / numPoints) * w * progress;
-          const decay = Math.max(0.01, 1 - (i / numPoints));
-          const noise = (Math.random() - 0.5) * 2 * decay * 8;
-          const y = midY + noise;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
 
-        // Label
         ctx.fillStyle = '#8892b0';
         ctx.font = '8px sans-serif';
         ctx.fillText('Simulated seismogram', 4, 10);
@@ -252,7 +394,6 @@ export default {
       eventClusterGroup.clearLayers();
       if (!props.events || props.events.length === 0) return;
 
-      // Filter events by mapMinMagnitude (client-side filter, map only)
       const filtered = props.mapMinMagnitude > 2
         ? props.events.filter((e) => (e.magnitude || 0) >= props.mapMinMagnitude)
         : props.events;
@@ -312,11 +453,9 @@ export default {
             const popupEl = marker.getPopup()?.getElement();
             if (!popupEl) return;
 
-            // Start seismogram animation
             const canvas = popupEl.querySelector('.seismogram-canvas');
-            if (canvas) renderSeismogram(canvas);
+            if (canvas) renderSeismogram(canvas, event);
 
-            // Handle share-as-image
             const shareImgBtn = popupEl.querySelector('.share-image-btn');
             if (shareImgBtn) {
               shareImgBtn.addEventListener('click', async (e) => {
@@ -333,8 +472,11 @@ export default {
 
               if (shakeBtn) {
                 e.stopPropagation();
-                emit('select-event', shakeBtn.dataset.eventId);
+                const eventId = shakeBtn.dataset.eventId;
+                emit('select-event', eventId);
                 marker.closePopup();
+                // On-demand ShakeMap: dispatch custom event
+                document.dispatchEvent(new CustomEvent('show-shakemap', { detail: eventId }));
               } else if (feltBtn) {
                 e.stopPropagation();
                 emit('select-event', feltBtn.dataset.eventId);
@@ -376,14 +518,9 @@ export default {
       }
     }
 
-    /**
-     * Share an event as an image using html-to-image.
-     */
     async function shareEventAsImage(event) {
       try {
         const { toPng } = await import('html-to-image');
-
-        // Create hidden div for the image
         const div = document.createElement('div');
         div.style.cssText = `
           width:400px; padding:24px; background:#1a1a2e; border-radius:12px;
@@ -415,20 +552,13 @@ export default {
           </div>
         `;
         document.body.appendChild(div);
-
         const dataUrl = await toPng(div, { quality: 0.95, pixelRatio: 2 });
         document.body.removeChild(div);
 
-        // Share or download
         const blob = await (await fetch(dataUrl)).blob();
         const file = new File([blob], `earthquake-m${event.magnitude?.toFixed(1)}.png`, { type: 'image/png' });
-
         if (navigator.share && navigator.canShare({ files: [file] })) {
-          await navigator.share({
-            title: `M${event.magnitude?.toFixed(1)} Earthquake`,
-            text: `${event.place}`,
-            files: [file],
-          });
+          await navigator.share({ title: `M${event.magnitude?.toFixed(1)} Earthquake`, text: `${event.place}`, files: [file] });
         } else {
           const link = document.createElement('a');
           link.download = `earthquake-m${event.magnitude?.toFixed(1)}.png`;
@@ -440,49 +570,10 @@ export default {
       }
     }
 
-    let autoFitShakemap = true;
-
     function renderShakeMap() {
-      if (!shakemapLayerGroup) return;
-      shakemapLayerGroup.clearLayers();
-      if (!props.shakemapContours) return;
-
-      const data = props.shakemapContours;
-      const features = data.features || [];
-
-      if (features.length === 0) {
-        if (data.geometry) {
-          try {
-            const layer = L.geoJSON(data, { style: getContourStyle });
-            shakemapLayerGroup.addLayer(layer);
-          } catch (err) {
-            console.warn('[MapView] Could not parse ShakeMap geometry:', err.message);
-          }
-        }
-        return;
-      }
-
-      const contourLayer = L.geoJSON(data, {
-        style: getContourStyle,
-        onEachFeature: (feature, layer) => {
-          if (feature.properties) {
-            const mmi = feature.properties.MMI || feature.properties.value || feature.properties.CONTAMMI;
-            const desc = mmi != null ? (MMI_DESCRIPTIONS[Math.round(mmi)] || 'Strong') : '';
-            const label = mmi != null ? `MMI ${mmi} (${desc})` : 'Intensity contour';
-            layer.bindTooltip(label, { sticky: true, className: 'shakemap-tooltip' });
-          }
-        },
-      });
-
-      shakemapLayerGroup.addLayer(contourLayer);
-
-      if (contourLayer.getBounds().isValid() && autoFitShakemap) {
-        map.fitBounds(contourLayer.getBounds(), { padding: [50, 50], maxZoom: 10 });
-        autoFitShakemap = false;
-      }
+      // No longer auto-renders from shakemapContours prop.
+      // ShakeMap is now on-demand via the 'show-shakemap' custom event.
     }
-
-    function resetAutoFitShakemap() { autoFitShakemap = true; }
 
     function getContourStyle(feature) {
       const mmi = feature?.properties?.MMI || feature?.properties?.value || feature?.properties?.CONTAMMI || 0;
@@ -573,13 +664,10 @@ export default {
       nextTick(() => renderZones());
     }, { deep: true });
 
-    // Update user location marker with accuracy circle
     watch(() => props.userLocation, (loc) => {
       if (!map) return;
-
       if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
       if (userAccuracyCircle) { map.removeLayer(userAccuracyCircle); userAccuracyCircle = null; }
-
       if (loc && loc.lat != null && loc.lng != null) {
         userMarker = L.marker([loc.lat, loc.lng], {
           icon: L.divIcon({
@@ -591,16 +679,10 @@ export default {
           zIndexOffset: 1000,
         }).addTo(map);
         userMarker.bindTooltip('You are here', { permanent: false, direction: 'top' });
-
-        // Add accuracy circle if accuracy is available
         if (props.userAccuracy != null) {
           userAccuracyCircle = L.circle([loc.lat, loc.lng], {
             radius: props.userAccuracy,
-            color: '#64ffda',
-            weight: 1,
-            fillOpacity: 0.1,
-            dashArray: '4, 4',
-            fillColor: '#64ffda',
+            color: '#64ffda', weight: 1, fillOpacity: 0.1, dashArray: '4, 4', fillColor: '#64ffda',
           }).addTo(map);
         }
       }
@@ -620,6 +702,7 @@ export default {
     });
 
     onBeforeUnmount(() => {
+      document.removeEventListener('show-shakemap', onShowShakeMap);
       if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
       if (magnitudeLegendControl && map) { map.removeControl(magnitudeLegendControl); }
       if (seismogramAnimId) cancelAnimationFrame(seismogramAnimId);
@@ -643,7 +726,6 @@ export default {
 }
 .mag-marker-inner:hover { transform: scale(1.15); }
 
-/* Cluster icon override */
 .cluster-icon { background: none !important; border: none !important; }
 
 .quake-popup-container .leaflet-popup-content-wrapper {
@@ -653,7 +735,6 @@ export default {
 .quake-popup-container .leaflet-popup-content { margin: 12px 16px; }
 .quake-popup p { margin: 4px 0; font-size: 13px; color: #8892b0; }
 
-/* Seismogram container */
 .seismogram-container { margin: 8px 0; border-radius: 6px; overflow: hidden; }
 .seismogram-canvas { display: block; width: 100%; height: 60px; background: #0f0f23; border-radius: 6px; }
 
@@ -676,7 +757,6 @@ export default {
 .shakemap-tooltip { background: rgba(26, 26, 46, 0.9) !important; color: #ccd6f6 !important; border: 1px solid #233554 !important; font-size: 11px !important; padding: 4px 8px !important; }
 .zone-tooltip { background: rgba(26, 26, 46, 0.9) !important; color: #64ffda !important; border: 1px solid #64ffda !important; font-size: 11px !important; padding: 4px 8px !important; }
 
-/* User location marker */
 .user-location-marker { background: none !important; border: none !important; }
 .user-location-dot {
   width: 16px; height: 16px; background: #64ffda; border-radius: 50%;
@@ -693,7 +773,6 @@ export default {
   100% { transform: scale(1); opacity: 0.6; }
 }
 
-/* MarkerCluster overrides */
 .marker-cluster-small { background: rgba(100, 255, 218, 0.15) !important; }
 .marker-cluster-small div { background: transparent !important; }
 .marker-cluster-medium { background: rgba(100, 255, 218, 0.2) !important; }

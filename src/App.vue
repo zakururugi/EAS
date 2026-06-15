@@ -370,7 +370,8 @@ export default {
     async function selectEvent(eventId) {
       selectedEventId.value = eventId;
       selectedEvent.value = events.value.find((e) => e.id === eventId) || null;
-      shakemapContours.value = null;
+      // Do NOT set shakemapContours here — ShakeMap is now on-demand via button click.
+      // We store the selected event data for the MapView to use.
 
       if (eventId) {
         window.location.hash = `#/event/${eventId}`;
@@ -378,33 +379,8 @@ export default {
         window.location.hash = '';
       }
 
-      if (eventId) {
-        shakemapLoading.value = true;
-
-        let contours = await loadCachedShakeMap(eventId);
-        if (contours) {
-          shakemapContours.value = contours;
-        }
-
-        try {
-          const contours = await api.fetchEventContours(eventId);
-          if (contours && contours.features && contours.features.length > 0) {
-            shakemapContours.value = contours;
-            cacheShakeMap(eventId, contours);
-          }
-        } catch (err) {
-          console.warn('[App] Could not load ShakeMap from backend:', err.message);
-        }
-
-        if (!shakemapContours.value && selectedEvent.value) {
-          const approximateContours = generateApproximateShakeMap(selectedEvent.value);
-          if (approximateContours) {
-            shakemapContours.value = approximateContours;
-          }
-        }
-
-        shakemapLoading.value = false;
-      }
+      // ShakeMap is no longer auto-loaded. The "Show ShakeMap" button in the popup
+      // dispatches 'show-shakemap' which MapView handles.
     }
 
     function startWatchingLocation() {

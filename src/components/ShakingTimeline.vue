@@ -106,7 +106,14 @@ function generateTimeline(event, distanceKm) {
   const { pArrival, sArrival } = calculateArrivalTimes(distanceKm, depth);
   const peakMMI = estimateMMI(mag, distanceKm);
   const peakTime = (parseFloat(sArrival) + 2).toFixed(1);
-  const duration = Math.max(30, mag * 5);
+
+  // Duration must be large enough to show P/S-wave arrival lines
+  const duration = Math.max(
+    parseFloat(pArrival) * 1.5,
+    parseFloat(sArrival) * 1.5,
+    mag * 5,
+    30
+  );
 
   const labels = [];
   const mmiValues = [];
@@ -128,7 +135,8 @@ function generateTimeline(event, distanceKm) {
       const decay = Math.exp(-(t - pT) / (duration * 0.2));
       mmi = peakMMI * decay;
     }
-    mmi = Math.min(10, Math.max(0, Math.round(mmi * 10) / 10));
+    // Never go below 0.1 so line is always visible (even at large distances)
+    mmi = Math.min(10, Math.max(0.1, Math.round(mmi * 10) / 10));
     labels.push(t.toFixed(1));
     mmiValues.push(mmi);
   }
@@ -318,16 +326,17 @@ export default {
             },
           },
           scales: {
-            x: {
-              title: {
-                display: true,
-                text: 'Time (seconds after origin)',
-                color: '#8892b0',
-                font: { size: 11 },
+              x: {
+                title: {
+                  display: true,
+                  text: 'Time (seconds after origin)',
+                  color: '#8892b0',
+                  font: { size: 11 },
+                },
+                max: tl.duration, // Ensure the x-axis shows the full duration including P/S-wave arrivals
+                grid: { color: 'rgba(35, 53, 84, 0.5)' },
+                ticks: { color: '#8892b0', font: { size: 10 }, maxTicksLimit: 20 },
               },
-              grid: { color: 'rgba(35, 53, 84, 0.5)' },
-              ticks: { color: '#8892b0', font: { size: 10 }, maxTicksLimit: 20 },
-            },
             y: {
               title: {
                 display: true,
@@ -367,13 +376,17 @@ export default {
         cancelAnimationFrame(playAnimId);
         playAnimId = null;
       }
-      // Reset cursor to start
+      // Reset cursor to start and hide label
       if (chart) {
         const playCursor = chart.options.plugins.annotation.annotations.playCursor;
         if (playCursor) {
           playCursor.xMin = 0;
           playCursor.xMax = 0;
-          chart.update();
+          playCursor.label = {
+            display: false,
+            content: '',
+          };
+          chart.update('none'); // 'none' avoids animation delay
         }
       }
       playCursorTime.value = 0;
@@ -382,21 +395,16 @@ export default {
     function animatePlay() {
       if (!chart || !timelineData.value) return;
       const duration = timelineData.value.duration;
-      const elapsed = (performance.now() - playStartTime) / 1000 * 2; // 2x speed for demo
+      // 1x realtime speed for accuracy
+      const elapsed = (performance.now() - playStartTime) / 1000;
       const currentTime = Math.min(elapsed, duration);
       playCursorTime.value = currentTime;
 
       const playCursor = chart.options.plugins.annotation.annotations.playCursor;
       if (playCursor) {
-        // Find nearest label index
-        const labels = chart.data.labels;
-        let idx = 0;
-        for (let i = 0; i < labels.length; i++) {
-          if (parseFloat(labels[i]) <= currentTime) idx = i;
-        }
-        const label = labels[idx] || '0';
-        playCursor.xMin = label;
-        playCursor.xMax = label;
+        // Use numeric time values directly for xMin/xMax
+        playCursor.xMin = String(currentTime);
+        playCursor.xMax = String(currentTime);
         playCursor.label = {
           display: true,
           content: `⏺ ${currentTime.toFixed(1)}s`,
@@ -406,12 +414,13 @@ export default {
           font: { size: 9, weight: 'bold' },
           padding: 3,
         };
-        chart.update();
+        chart.update('none');
       }
 
       if (currentTime < duration) {
         playAnimId = requestAnimationFrame(animatePlay);
       } else {
+        // Automatically stop at the end
         stopPlay();
       }
     }
