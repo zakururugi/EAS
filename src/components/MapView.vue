@@ -225,7 +225,9 @@ export default {
       if (levels.length === 0) return;
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
-      const c = 1.5;
+      // Attenuation coefficient (higher = smaller radii for a given MMI)
+      // c=2.5 gives realistic radii: M5.0 MMI 5 ≈ 52km, M7.8 MMI 8 ≈ 574km
+      const c = 2.5;
       // Depth factor: deeper quakes spread energy over wider area → larger contour radii
       const depthFactor = Math.min(1.5, 1 + depth / 30);
 

@@ -94,7 +94,8 @@ function calculateArrivalTimes(distanceKm, depthKm) {
  * Derived from: radius = 10^((mag - log10(mmi)) / c)  =>  mmi = 10^(mag - c * log10(distance))
  */
 function estimateMMI(mag, distanceKm) {
-  const c = 1.5;
+  // Using same attenuation coefficient as ShakeMap (c=2.5) for consistency
+  const c = 2.5;
   let mmi = Math.pow(10, mag - c * Math.log10(Math.max(1, distanceKm)));
   return Math.min(10, Math.max(0.5, mmi));
 }
@@ -196,6 +197,24 @@ export default {
     let playAnimId = null;
     let playStartTime = 0;
 
+    /**
+     * Snap a time value to the nearest label string in the labels array.
+     * Chart.js category scale requires exact string matches for annotation positioning.
+     */
+    function snapToNearestLabel(labels, time) {
+      const numTime = parseFloat(time);
+      let closest = labels[0];
+      let minDiff = Infinity;
+      for (const lbl of labels) {
+        const diff = Math.abs(parseFloat(lbl) - numTime);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closest = lbl;
+        }
+      }
+      return closest;
+    }
+
     function renderChart() {
       if (!chartCanvas.value || !props.event) return;
 
@@ -204,6 +223,11 @@ export default {
       timelineData.value = tl;
 
       if (chart) chart.destroy();
+
+      // Snap annotation positions to nearest labels for Chart.js category scale compatibility
+      const pLabel = snapToNearestLabel(tl.labels, tl.pArrival);
+      const sLabel = snapToNearestLabel(tl.labels, tl.sArrival);
+      const peakLabel = snapToNearestLabel(tl.labels, tl.peakTime);
 
       const ctx = chartCanvas.value.getContext('2d');
       chart = new Chart(ctx, {
@@ -245,8 +269,8 @@ export default {
               annotations: {
                 pWaveLine: {
                   type: 'line',
-                  xMin: parseFloat(tl.pArrival),
-                  xMax: parseFloat(tl.pArrival),
+                  xMin: pLabel,
+                  xMax: pLabel,
                   borderColor: '#00e676',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -262,8 +286,8 @@ export default {
                 },
                 sWaveLine: {
                   type: 'line',
-                  xMin: parseFloat(tl.sArrival),
-                  xMax: parseFloat(tl.sArrival),
+                  xMin: sLabel,
+                  xMax: sLabel,
                   borderColor: '#ffd600',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -279,8 +303,8 @@ export default {
                 },
                 peakLine: {
                   type: 'line',
-                  xMin: parseFloat(tl.peakTime),
-                  xMax: parseFloat(tl.peakTime),
+                  xMin: peakLabel,
+                  xMax: peakLabel,
                   borderColor: '#ff1744',
                   borderWidth: 2,
                   borderDash: [6, 3],
