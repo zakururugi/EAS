@@ -306,24 +306,25 @@ export default {
      * Uses empirical USGS-style attenuation formula.
      */
     /**
-     * Consistent MMI estimation formula for both Shakemap and Timeline.
-     * Empirically calibrated: M ~7.8 → MMI 10 at epicenter, M ~5.0 → MMI 6-7.
-     * Falls off as ~log10(distance): ~7 points per 100x distance.
+     * Improved attenuation model with extra decay at large distances.
+     * mmi = 1.5*mag + 0.5 - 3.0*log10(d), with extra decay for d > 200km
      */
     function estimateMMI(mag, distanceKm) {
       const d = Math.max(5, distanceKm);
-      let mmi = 1.5 * mag - 2.5 * Math.log10(d) + 1.5;
-      return Math.min(10, Math.max(0.5, mmi));
+      let mmi = 1.5 * mag + 0.5 - 3.0 * Math.log10(d);
+      if (d > 200) mmi -= 0.002 * (d - 200);
+      return Math.min(10, Math.max(1, Math.round(mmi * 10) / 10));
     }
 
     /**
      * Compute the radius (km) where intensity drops to a given MMI level.
-     * Derived from: mmi = 1.5*mag - 2.5*log10(radius) + 1.5
-     * => radius = 10^((1.5*mag + 1.5 - mmi) / 2.5)
+     * Derived from: mmi = 1.5*mag + 0.5 - 3*log10(r)  => r = 10^((1.5*mag + 0.5 - mmi)/3)
+     * Enforced magnitude-based max radius.
      */
     function getShakemapRadius(mag, mmi) {
-      const r = Math.pow(10, (1.5 * mag + 1.5 - mmi) / 2.5);
-      return Math.min(1000, r);
+      const r = Math.pow(10, (1.5 * mag + 0.5 - mmi) / 3.0);
+      const maxRadius = Math.pow(10, mag / 2) * 5;
+      return Math.min(maxRadius, r);
     }
 
     function generateApproximateShakeMap(event) {
@@ -339,9 +340,12 @@ export default {
       const epicMmi = Math.round(Math.min(10, Math.max(1, estimateMMI(mag, 5))));
 
       // Only render MMI levels from 2 up to epicentral
+      // Skip MMI < 3 unless mag > 6.5 (avoid huge weak-shaking circles)
       const levels = [epicMmi, epicMmi - 1, epicMmi - 2, epicMmi - 3, epicMmi - 4, epicMmi - 5]
-        .filter(mmi => mmi >= 2);
+        .filter(mmi => mmi >= (mag > 6.5 ? 2 : 3));
       if (levels.length === 0) return null;
+
+      const maxRadius = Math.pow(10, mag / 2) * 5;
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
 
@@ -352,10 +356,11 @@ export default {
 
       for (const mmi of levels) {
         let radiusKm = getShakemapRadius(mag, mmi);
-        if (radiusKm < 5) continue;
+        if (radiusKm < 10 || radiusKm > maxRadius) continue;
 
         radiusKm *= depthFactor;
         radiusKm *= Math.sqrt(siteAmp);
+        if (radiusKm < 10 || radiusKm > maxRadius) continue;
 
         const radiusM = radiusKm * 1000;
         const points = [];

@@ -90,70 +90,91 @@ function calculateArrivalTimes(distanceKm, depthKm) {
 }
 
 /**
- * Estimate MMI from magnitude and distance using the same attenuation formula as ShakeMap.
- * Derived from: radius = 10^((mag - log10(mmi)) / c)  =>  mmi = 10^(mag - c * log10(distance))
+ * Estimate MMI from magnitude and distance using improved attenuation model.
+ * mmi = 1.5*mag + 0.5 - 3.0*log10(d), extra decay for d > 200km.
+ * Consistent with ShakeMap formula.
  */
 function estimateMMI(mag, distanceKm) {
-  // Consistent formula used across Shakemap and Timeline
-  // Empirically calibrated: M7.8 → MMI 10 at source, M5.0 → MMI 6-7
-  // Falls off as ~log10(distance): ~7 points per 100x distance
   const d = Math.max(5, distanceKm);
-  let mmi = 1.5 * mag - 2.5 * Math.log10(d) + 1.5;
-  return Math.min(10, Math.max(0.5, mmi));
+  let mmi = 1.5 * mag + 0.5 - 3.0 * Math.log10(d);
+  if (d > 200) mmi -= 0.002 * (d - 200);
+  return Math.min(10, Math.max(1, Math.round(mmi * 10) / 10));
 }
 
 /**
- * Generate the shaking timeline (MMI vs time in seconds).
+ * Generate the shaking timeline (MMI vs time in seconds) using a smooth envelope model.
+ * Uses linear x-axis numeric data points {x, y} for Chart.js.
+ * Waveform:
+ *   t < pA: mmi = 0
+ *   pA <= t < sA: gradual ramp 0 → 0.3 * peakMMI (smooth sine-taper ramp)
+ *   sA <= t < pT: linear increase 0.3*peak → peakMMI
+ *   t >= pT: exponential decay peakMMI * exp(-(t-pT)/(pT*0.5))
  */
 function generateTimeline(event, distanceKm) {
   const mag = event.magnitude;
   const depth = event.depth || 10;
   const { pArrival, sArrival } = calculateArrivalTimes(distanceKm, depth);
   const peakMMI = estimateMMI(mag, distanceKm);
-  const peakTime = (parseFloat(sArrival) + 2).toFixed(1);
+  const pA = parseFloat(pArrival);
+  const sA = parseFloat(sArrival);
 
-  // Duration must be large enough to show P/S-wave arrival lines
+  // Ensure S-wave always arrives at least 1s after P-wave (edge case at t≈0)
+  const sAEffective = Math.max(sA, pA + 1.0);
+
+  // Peak occurs a few seconds after S-wave arrival (scales with distance, min 2s)
+  const pT = sAEffective + Math.min(10, Math.max(2, distanceKm / 50));
+
+  // Decay time constant: at least 3s to always show a visible tail
+  const decayTau = Math.max(3, pT * 0.5);
+
+  // Duration: enough to reach ~5% of peak after decay, plus a buffer
+  const decayToFivePercent = decayTau * Math.log(20); // e^-x = 0.05 → x = ln(20)
   const duration = Math.max(
-    parseFloat(pArrival) * 1.5,
-    parseFloat(sArrival) * 1.5,
+    pA * 1.8,
+    sAEffective * 1.8,
+    pT + decayToFivePercent,
     mag * 5,
     30
   );
 
-  const labels = [];
-  const mmiValues = [];
+  // Use 0.25s step for smooth curve with linear x-axis (faster rendering)
+  const step = distanceKm > 200 ? 0.5 : 0.25;
+  const points = [];
 
-  for (let t = 0; t <= duration; t += 0.5) {
+  const psDelta = sAEffective - pA; // guaranteed > 0
+  const sPeakDelta = pT - sAEffective; // guaranteed > 0
+
+  for (let t = 0; t <= duration; t += step) {
     let mmi = 0;
-    const pA = parseFloat(pArrival);
-    const sA = parseFloat(sArrival);
-    const pT = parseFloat(peakTime);
 
     if (t < pA) {
       mmi = 0;
-    } else if (t < sA) {
-      mmi = peakMMI * 0.6;
+    } else if (t < sAEffective) {
+      // Smooth sine-taper ramp from 0 to 0.3*peakMMI between P and S
+      const ramp = (t - pA) / psDelta;
+      const smooth = 0.5 - 0.5 * Math.cos(ramp * Math.PI);
+      mmi = peakMMI * 0.3 * smooth;
     } else if (t < pT) {
-      const ratio = (t - sA) / (pT - sA);
-      mmi = peakMMI * (0.6 + ratio * 0.4);
+      // Linear increase from 0.3*peakMMI to peakMMI
+      const ratio = (t - sAEffective) / sPeakDelta;
+      mmi = peakMMI * (0.3 + 0.7 * ratio);
     } else {
-      const decay = Math.exp(-(t - pT) / (duration * 0.2));
+      // Exponential decay
+      const decay = Math.exp(-(t - pT) / decayTau);
       mmi = peakMMI * decay;
     }
-    // Never go below 0.1 so line is always visible (even at large distances)
-    mmi = Math.min(10, Math.max(0.1, Math.round(mmi * 10) / 10));
-    labels.push(t.toFixed(1));
-    mmiValues.push(mmi);
+
+    mmi = Math.min(10, Math.max(0, Math.round(mmi * 10) / 10));
+    points.push({ x: parseFloat(t.toFixed(2)), y: mmi });
   }
 
   return {
-    labels,
-    mmiValues,
-    pArrival,
-    sArrival,
-    peakTime,
+    points,
+    pArrival: pA.toFixed(1),
+    sArrival: sAEffective.toFixed(1),
+    peakTime: pT.toFixed(1),
     peakMMI: Math.round(peakMMI * 10) / 10,
-    duration,
+    duration: Math.round(duration),
   };
 }
 
@@ -173,7 +194,6 @@ async function fetchHistoricalEvents(lat, lon, radiusKm = 50) {
       place: f.properties.place,
     }));
   } catch {
-    // Show toast-like notification in console if fails
     console.warn('[Timeline] Could not load historical data – using cached only.');
     return [];
   }
@@ -199,24 +219,6 @@ export default {
     let playAnimId = null;
     let playStartTime = 0;
 
-    /**
-     * Snap a time value to the nearest label string in the labels array.
-     * Chart.js category scale requires exact string matches for annotation positioning.
-     */
-    function snapToNearestLabel(labels, time) {
-      const numTime = parseFloat(time);
-      let closest = labels[0];
-      let minDiff = Infinity;
-      for (const lbl of labels) {
-        const diff = Math.abs(parseFloat(lbl) - numTime);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closest = lbl;
-        }
-      }
-      return closest;
-    }
-
     function renderChart() {
       if (!chartCanvas.value || !props.event) return;
 
@@ -226,20 +228,16 @@ export default {
 
       if (chart) chart.destroy();
 
-      // Snap annotation positions to nearest labels for Chart.js category scale compatibility
-      const pLabel = snapToNearestLabel(tl.labels, tl.pArrival);
-      const sLabel = snapToNearestLabel(tl.labels, tl.sArrival);
-      const peakLabel = snapToNearestLabel(tl.labels, tl.peakTime);
-
       const ctx = chartCanvas.value.getContext('2d');
+
+      // Use linear x-axis with {x, y} dataset points for proper numeric positioning
       chart = new Chart(ctx, {
         type: 'line',
         data: {
-          labels: tl.labels,
           datasets: [
             {
               label: 'MMI Intensity',
-              data: tl.mmiValues,
+              data: tl.points,
               borderColor: '#ff6d00',
               backgroundColor: 'rgba(255, 109, 0, 0.1)',
               fill: true,
@@ -251,15 +249,15 @@ export default {
         },
         options: {
           responsive: true,
-          maintainAspectRatio: false,  // Mobile-friendly
+          maintainAspectRatio: false,
           animation: { duration: 600 },
-          interaction: { intersect: false, mode: 'index' },
+          interaction: { intersect: false, mode: 'nearest', axis: 'x' },
           plugins: {
             legend: { display: false },
             tooltip: {
               callbacks: {
-                title: (items) => `Time: ${items[0].label}s`,
-                label: (ctx) => `MMI ${ctx.raw}`,
+                title: (items) => `Time: ${items[0].parsed.x.toFixed(1)}s`,
+                label: (ctx) => `MMI ${ctx.parsed.y}`,
               },
               backgroundColor: 'rgba(15, 15, 35, 0.9)',
               borderColor: '#233554',
@@ -271,8 +269,8 @@ export default {
               annotations: {
                 pWaveLine: {
                   type: 'line',
-                  xMin: pLabel,
-                  xMax: pLabel,
+                  xMin: parseFloat(tl.pArrival),
+                  xMax: parseFloat(tl.pArrival),
                   borderColor: '#00e676',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -288,8 +286,8 @@ export default {
                 },
                 sWaveLine: {
                   type: 'line',
-                  xMin: sLabel,
-                  xMax: sLabel,
+                  xMin: parseFloat(tl.sArrival),
+                  xMax: parseFloat(tl.sArrival),
                   borderColor: '#ffd600',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -305,8 +303,8 @@ export default {
                 },
                 peakLine: {
                   type: 'line',
-                  xMin: peakLabel,
-                  xMax: peakLabel,
+                  xMin: parseFloat(tl.peakTime),
+                  xMax: parseFloat(tl.peakTime),
                   borderColor: '#ff1744',
                   borderWidth: 2,
                   borderDash: [6, 3],
@@ -354,17 +352,19 @@ export default {
             },
           },
           scales: {
-              x: {
-                title: {
-                  display: true,
-                  text: 'Time (seconds after origin)',
-                  color: '#8892b0',
-                  font: { size: 11 },
-                },
-                max: tl.duration, // Ensure the x-axis shows the full duration including P/S-wave arrivals
-                grid: { color: 'rgba(35, 53, 84, 0.5)' },
-                ticks: { color: '#8892b0', font: { size: 10 }, maxTicksLimit: 20 },
+            x: {
+              type: 'linear',
+              title: {
+                display: true,
+                text: 'Time (seconds after origin)',
+                color: '#8892b0',
+                font: { size: 11 },
               },
+              min: 0,
+              max: tl.duration,
+              grid: { color: 'rgba(35, 53, 84, 0.5)' },
+              ticks: { color: '#8892b0', font: { size: 10 }, maxTicksLimit: 20 },
+            },
             y: {
               title: {
                 display: true,
@@ -404,17 +404,13 @@ export default {
         cancelAnimationFrame(playAnimId);
         playAnimId = null;
       }
-      // Reset cursor to start and hide label
       if (chart) {
         const playCursor = chart.options.plugins.annotation.annotations.playCursor;
         if (playCursor) {
           playCursor.xMin = 0;
           playCursor.xMax = 0;
-          playCursor.label = {
-            display: false,
-            content: '',
-          };
-          chart.update('none'); // 'none' avoids animation delay
+          playCursor.label = { display: false, content: '' };
+          chart.update('none');
         }
       }
       playCursorTime.value = 0;
@@ -423,7 +419,6 @@ export default {
     function animatePlay() {
       if (!chart || !timelineData.value) return;
       const duration = timelineData.value.duration;
-      // Adaptive speed: play entire duration in ~8 seconds regardless of event length
       const speedMultiplier = Math.max(1, duration / 8);
       const elapsed = (performance.now() - playStartTime) / 1000 * speedMultiplier;
       const currentTime = Math.min(elapsed, duration);
@@ -431,10 +426,9 @@ export default {
 
       const playCursor = chart.options.plugins.annotation.annotations.playCursor;
       if (playCursor) {
-        // Use numeric time values directly for xMin/xMax
-        // Use string labels (matching Chart.js category scale) for correct positioning
-        playCursor.xMin = currentTime.toFixed(1);
-        playCursor.xMax = currentTime.toFixed(1);
+        // With linear x-axis, use numeric values directly
+        playCursor.xMin = currentTime;
+        playCursor.xMax = currentTime;
         playCursor.label = {
           display: true,
           content: `⏺ ${currentTime.toFixed(1)}s`,
@@ -450,7 +444,6 @@ export default {
       if (currentTime < duration) {
         playAnimId = requestAnimationFrame(animatePlay);
       } else {
-        // Automatically stop at the end
         stopPlay();
       }
     }
@@ -476,7 +469,7 @@ export default {
         }
         chart.data.datasets.push({
           label: `M${hist.mag.toFixed(1)} historical`,
-          data: histTl.mmiValues,
+          data: histTl.points,
           borderColor: 'rgba(100, 255, 218, 0.7)',
           backgroundColor: 'rgba(100, 255, 218, 0.05)',
           fill: true,
@@ -489,7 +482,6 @@ export default {
       }
     }
 
-    // Load historical events on mount
     onMounted(async () => {
       await nextTick();
       if (props.event) {
@@ -508,7 +500,7 @@ export default {
       () => props.event,
       async (newEvent) => {
         if (newEvent) {
-          stopPlay(); // Stop any ongoing animation
+          stopPlay();
           renderChart();
           if (newEvent.latitude && newEvent.longitude) {
             historicalQuakes.value = await fetchHistoricalEvents(
@@ -582,49 +574,24 @@ export default {
   margin-bottom: 10px;
 }
 
-.timeline-header h3 {
-  color: #64ffda;
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
+.timeline-header h3 { color: #64ffda; margin: 0; font-size: 15px; font-weight: 600; }
 
-/* Chart wrapper for responsive sizing */
-.timeline-chart-wrapper {
-  width: 100%;
-  height: 200px;
-  position: relative;
-}
+.timeline-chart-wrapper { width: 100%; height: 200px; position: relative; }
 
 .close-btn {
-  background: none;
-  border: none;
-  color: #8892b0;
-  cursor: pointer;
-  font-size: 18px;
-  padding: 0 4px;
-  transition: color 0.2s;
+  background: none; border: none; color: #8892b0; cursor: pointer;
+  font-size: 18px; padding: 0 4px; transition: color 0.2s;
 }
-.close-btn:hover {
-  color: #ff1744;
-}
+.close-btn:hover { color: #ff1744; }
 
 .timeline-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 8px;
-  font-size: 10px;
-  color: #8892b0;
+  display: flex; flex-wrap: wrap; gap: 14px;
+  margin-top: 8px; font-size: 10px; color: #8892b0;
 }
 
 .dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 4px;
-  vertical-align: middle;
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 4px; vertical-align: middle;
 }
 .dot-p { background: #00e676; }
 .dot-s { background: #ffd600; }
@@ -632,79 +599,29 @@ export default {
 .dot-safe { background: #64ffda; }
 
 .timeline-stats {
-  display: flex;
-  gap: 16px;
-  margin-top: 10px;
-  padding: 8px 12px;
-  background: rgba(35, 53, 84, 0.3);
-  border-radius: 6px;
-  font-size: 11px;
+  display: flex; gap: 16px; margin-top: 10px;
+  padding: 8px 12px; background: rgba(35, 53, 84, 0.3);
+  border-radius: 6px; font-size: 11px;
 }
-.stat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-.stat-label {
-  color: #8892b0;
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.stat-value {
-  color: #ccd6f6;
-  font-weight: 700;
-  font-size: 13px;
-}
+.stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.stat-label { color: #8892b0; font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-value { color: #ccd6f6; font-weight: 700; font-size: 13px; }
 
-/* Play controls */
-.timeline-play-controls {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-}
+.timeline-play-controls { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
 .play-btn {
-  background: #233554;
-  color: #64ffda;
-  border: 1px solid #2e4a6b;
-  padding: 6px 14px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  transition: background 0.2s;
+  background: #233554; color: #64ffda; border: 1px solid #2e4a6b;
+  padding: 6px 14px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; font-weight: 600; transition: background 0.2s;
 }
-.play-btn:hover:not(:disabled) {
-  background: #2e4a6b;
-}
-.play-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.play-time {
-  font-size: 11px;
-  color: #8892b0;
-}
+.play-btn:hover:not(:disabled) { background: #2e4a6b; }
+.play-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.play-time { font-size: 11px; color: #8892b0; }
 
-.timeline-controls {
-  margin-top: 10px;
-  font-size: 12px;
-  color: #8892b0;
-}
-.timeline-controls label {
-  margin-right: 6px;
-}
+.timeline-controls { margin-top: 10px; font-size: 12px; color: #8892b0; }
+.timeline-controls label { margin-right: 6px; }
 select {
-  background: #0f0f23;
-  color: #ccd6f6;
-  border: 1px solid #233554;
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
+  background: #0f0f23; color: #ccd6f6; border: 1px solid #233554;
+  border-radius: 4px; padding: 4px 8px; font-size: 12px;
 }
-select:focus {
-  outline: 1px solid #64ffda;
-}
+select:focus { outline: 1px solid #64ffda; }
 </style>

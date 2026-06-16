@@ -213,24 +213,25 @@ export default {
      * Uses the same formula as App.vue's generateApproximateShakeMap.
      */
     /**
-     * Consistent MMI estimation formula used for both Shakemap and Timeline.
-     * Empirically calibrated: M ~7.8 → MMI 10 at epicenter, M ~5.0 → MMI 6-7.
-     * Falls off as ~log10(distance) from source.
+     * Improved attenuation model with extra decay at large distances.
+     * mmi = 1.5*mag + 0.5 - 3.0*log10(d), with extra decay for d > 200km
      */
     function estimateMMI(mag, distanceKm) {
       const d = Math.max(5, distanceKm);
-      let mmi = 1.5 * mag - 2.5 * Math.log10(d) + 1.5;
-      return Math.min(10, Math.max(0.5, mmi));
+      let mmi = 1.5 * mag + 0.5 - 3.0 * Math.log10(d);
+      if (d > 200) mmi -= 0.002 * (d - 200);
+      return Math.min(10, Math.max(1, Math.round(mmi * 10) / 10));
     }
 
     /**
      * Compute the radius (km) where intensity drops to a given MMI level.
-     * Derived from: mmi = 1.5*mag - 2.5*log10(radius) + 1.5
-     * => radius = 10^((1.5*mag + 1.5 - mmi) / 2.5)
+     * Derived from: mmi = 1.5*mag + 0.5 - 3*log10(r)  => r = 10^((1.5*mag + 0.5 - mmi)/3)
+     * Enforced magnitude-based max radius.
      */
     function getShakemapRadius(mag, mmi) {
-      const r = Math.pow(10, (1.5 * mag + 1.5 - mmi) / 2.5);
-      return Math.min(1000, r);
+      const r = Math.pow(10, (1.5 * mag + 0.5 - mmi) / 3.0);
+      const maxRadius = Math.pow(10, mag / 2) * 5;
+      return Math.min(maxRadius, r);
     }
 
     function generatedShakeMapForEvent(event) {
@@ -246,10 +247,13 @@ export default {
       const epicMmi = Math.round(Math.min(10, Math.max(1, estimateMMI(mag, 5))));
 
       // Only render MMI levels from 2 up to epicentral
+      // Skip MMI < 3 unless mag > 6.5 (avoid huge weak-shaking circles)
       const levels = [epicMmi, epicMmi - 1, epicMmi - 2, epicMmi - 3, epicMmi - 4, epicMmi - 5]
-        .filter(mmi => mmi >= 2);
+        .filter(mmi => mmi >= (mag > 6.5 ? 2 : 3));
 
       if (levels.length === 0) return;
+
+      const maxRadius = Math.pow(10, mag / 2) * 5;
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
 
@@ -260,9 +264,10 @@ export default {
 
       for (const mmi of levels) {
         let radiusKm = getShakemapRadius(mag, mmi);
-        if (radiusKm < 5) continue;
+        if (radiusKm < 10 || radiusKm > maxRadius) continue;
         radiusKm *= depthFactor;
         radiusKm *= Math.sqrt(siteAmp);
+        if (radiusKm < 10 || radiusKm > maxRadius) continue; // re-check after scaling
 
         const radiusM = radiusKm * 1000;
         const points = [];
@@ -353,7 +358,6 @@ export default {
       const h = canvas.height;
       const midY = h / 2;
       const mag = event?.magnitude || 5;
-      const distance = 100;
 
       // Logarithmic amplitude scaling: larger magnitudes produce visibly stronger wiggles
       const amplitude = Math.min(30, Math.max(8, Math.pow(mag, 1.5) / 8));
@@ -402,7 +406,7 @@ export default {
             ? Math.sin(2 * Math.PI * sWaveFreq * t) * envelope
             : 0;
           const signal = (pWave + sWave) * amplitude;
-          const noise = noiseBuffer[i]; // Use precomputed noise
+          const noise = noiseBuffer[i];
           const y = midY + signal + noise;
           const x = (i / numPoints) * w * progress;
           if (i === 0) ctx.moveTo(x, y);
@@ -410,9 +414,12 @@ export default {
         }
         ctx.stroke();
 
-        ctx.fillStyle = '#8892b0';
-        ctx.font = '8px sans-serif';
-        ctx.fillText('Simulated seismogram', 4, 10);
+        // Clear disclaimer banner area and redraw it on top of waveform
+        ctx.fillStyle = 'rgba(15, 15, 35, 0.72)';
+        ctx.fillRect(0, 0, w, 14);
+        ctx.fillStyle = '#ff9800';
+        ctx.font = 'bold 8px sans-serif';
+        ctx.fillText('⚠ Demo — not actual seismic data', 4, 10);
 
         if (progress < 1) {
           seismogramAnimId = requestAnimationFrame(draw);
@@ -459,6 +466,7 @@ export default {
             </div>
             <div class="seismogram-container">
               <canvas class="seismogram-canvas" width="276" height="60"></canvas>
+              <div class="seismogram-disclaimer">🔬 Stylised visualisation only — not real seismic data</div>
             </div>
             <div class="popup-actions" style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
               <button class="popup-btn shake-btn" data-event-id="${event.id}">
@@ -770,7 +778,13 @@ export default {
 .quake-popup p { margin: 4px 0; font-size: 13px; color: #8892b0; }
 
 .seismogram-container { margin: 8px 0; border-radius: 6px; overflow: hidden; }
-.seismogram-canvas { display: block; width: 100%; height: 60px; background: #0f0f23; border-radius: 6px; }
+.seismogram-canvas { display: block; width: 100%; height: 60px; background: #0f0f23; border-radius: 6px 6px 0 0; }
+.seismogram-disclaimer {
+  background: rgba(255, 152, 0, 0.12); color: #ff9800;
+  border: 1px solid rgba(255, 152, 0, 0.3); border-top: none;
+  font-size: 9px; padding: 3px 6px; border-radius: 0 0 6px 6px;
+  letter-spacing: 0.3px;
+}
 
 .popup-btn {
   background: #233554; color: #64ffda; border: 1px solid #2e4a6b;
