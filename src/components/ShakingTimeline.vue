@@ -78,24 +78,33 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 
 /**
  * Calculate P-wave and S-wave arrival times (seconds after origin).
+ * Uses hypocentral distance for physically accurate travel times.
+ * Vp ≈ 6.0 km/s, Vs ≈ 3.5 km/s (typical crustal values for the Philippines).
  */
-function calculateArrivalTimes(distanceKm, depthKm) {
-  const pTravel = distanceKm / 6.0;
-  const sTravel = distanceKm / 3.5;
-  const depthDelay = depthKm / 8.0;
+function calculateArrivalTimes(epicDistKm, depthKm) {
+  const rHypo = Math.sqrt(epicDistKm * epicDistKm + depthKm * depthKm);
+  const pArrival = rHypo / 6.0;
+  const sArrival = rHypo / 3.5;
   return {
-    pArrival: (pTravel + depthDelay).toFixed(1),
-    sArrival: (sTravel + depthDelay).toFixed(1),
+    pArrival: pArrival.toFixed(1),
+    sArrival: sArrival.toFixed(1),
   };
 }
 
 /**
- * Estimate MMI from magnitude and distance using improved attenuation model.
- * mmi = 1.5*mag + 0.5 - 3.0*log10(d), extra decay for d > 200km.
- * Consistent with ShakeMap formula.
+ * Estimate MMI from magnitude and distance using hypocentral-distance IPE.
+ * Consistent with the ShakeMap formula in MapView.vue and App.vue.
+ *
+ * mmi = 1.5·mag + 0.5 − 3.0·log₁₀(rHypo)
+ * Extra linear decay for rHypo > 200 km.
+ *
+ * @param {number} mag        – moment magnitude
+ * @param {number} epicDistKm – epicentral distance in km
+ * @param {number} depthKm    – focal depth in km (default 10)
  */
-function estimateMMI(mag, distanceKm) {
-  const d = Math.max(5, distanceKm);
+function estimateMMI(mag, epicDistKm, depthKm = 10) {
+  const rHypo = Math.sqrt(epicDistKm * epicDistKm + depthKm * depthKm);
+  const d = Math.max(5, rHypo);
   let mmi = 1.5 * mag + 0.5 - 3.0 * Math.log10(d);
   if (d > 200) mmi -= 0.002 * (d - 200);
   return Math.min(10, Math.max(1, Math.round(mmi * 10) / 10));
@@ -114,7 +123,8 @@ function generateTimeline(event, distanceKm) {
   const mag = event.magnitude;
   const depth = event.depth || 10;
   const { pArrival, sArrival } = calculateArrivalTimes(distanceKm, depth);
-  const peakMMI = estimateMMI(mag, distanceKm);
+  // Use hypocentral distance for peakMMI — consistent with ShakeMap formula
+  const peakMMI = estimateMMI(mag, distanceKm, depth);
   const pA = parseFloat(pArrival);
   const sA = parseFloat(sArrival);
 

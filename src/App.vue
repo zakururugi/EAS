@@ -305,26 +305,47 @@ export default {
      * Generate approximate ShakeMap intensity zones based on magnitude, depth, and soil type.
      * Uses empirical USGS-style attenuation formula.
      */
+
     /**
-     * Improved attenuation model with extra decay at large distances.
-     * mmi = 1.5*mag + 0.5 - 3.0*log10(d), with extra decay for d > 200km
+     * IPE: estimates MMI using hypocentral distance for accuracy.
+     * Accounts for focal depth so deep quakes produce less surface shaking.
+     * Formula: mmi = 1.5·mag + 0.5 − 3.0·log₁₀(rHypo)
+     * Extra decay term for rHypo > 200 km.
+     *
+     * @param {number} mag        – moment magnitude
+     * @param {number} epicDistKm – epicentral distance in km (surface distance)
+     * @param {number} depthKm    – focal depth in km (default 10)
      */
-    function estimateMMI(mag, distanceKm) {
-      const d = Math.max(5, distanceKm);
+    function estimateMMI(mag, epicDistKm, depthKm = 10) {
+      const rHypo = Math.sqrt(epicDistKm * epicDistKm + depthKm * depthKm);
+      const d = Math.max(5, rHypo);
       let mmi = 1.5 * mag + 0.5 - 3.0 * Math.log10(d);
       if (d > 200) mmi -= 0.002 * (d - 200);
       return Math.min(10, Math.max(1, Math.round(mmi * 10) / 10));
     }
 
     /**
-     * Compute the radius (km) where intensity drops to a given MMI level.
-     * Derived from: mmi = 1.5*mag + 0.5 - 3*log10(r)  => r = 10^((1.5*mag + 0.5 - mmi)/3)
-     * Enforced magnitude-based max radius.
+     * Compute the epicentral radius (km) where surface MMI equals `mmi`.
+     *
+     * Method: invert the hypocentral-distance IPE.
+     *   rHypo = 10^((1.5·mag + 0.5 − mmi) / 3)
+     *   rEpi  = √(rHypo² − depth²)   (0 if depth > rHypo → MMI unreachable at surface)
+     *
+     * maxRadius uses the corrected formula: 10^(mag/2) / 2
+     *   → M5 ≈ 158 km, M6 ≈ 500 km, M7 ≈ 1 581 km
+     *   (previous ×5 multiplier was a 10× error giving M5=1 581 km)
+     *
+     * @param {number} mag     – moment magnitude
+     * @param {number} mmi     – target MMI level
+     * @param {number} depthKm – focal depth in km (default 10)
+     * @returns {number} epicentral radius in km, or 0 if unreachable
      */
-    function getShakemapRadius(mag, mmi) {
-      const r = Math.pow(10, (1.5 * mag + 0.5 - mmi) / 3.0);
-      const maxRadius = Math.pow(10, mag / 2) * 5;
-      return Math.min(maxRadius, r);
+    function getShakemapRadius(mag, mmi, depthKm = 10) {
+      const rHypo = Math.pow(10, (1.5 * mag + 0.5 - mmi) / 3.0);
+      const rEpiSq = rHypo * rHypo - depthKm * depthKm;
+      if (rEpiSq <= 0) return 0; // focal depth > reach → MMI level not felt at surface
+      const maxRadius = Math.pow(10, mag / 2) / 2; // FIXED: was ×5 (10× too large)
+      return Math.min(maxRadius, Math.sqrt(rEpiSq));
     }
 
     function generateApproximateShakeMap(event) {
@@ -336,35 +357,38 @@ export default {
 
       if (!lat || !lng || mag < 4.5) return null;
 
-      // Epicentral MMI (at ~5km from hypocenter)
-      const epicMmi = Math.round(Math.min(10, Math.max(1, estimateMMI(mag, 5))));
+      // Epicentral MMI directly above the hypocenter (epicDist = 0, rHypo = depth)
+      const epicMmi = Math.round(Math.min(10, Math.max(1, estimateMMI(mag, 0, depth))));
 
-      // Only render MMI levels from 2 up to epicentral
-      // Skip MMI < 3 unless mag > 6.5 (avoid huge weak-shaking circles)
-      const levels = [epicMmi, epicMmi - 1, epicMmi - 2, epicMmi - 3, epicMmi - 4, epicMmi - 5]
-        .filter(mmi => mmi >= (mag > 6.5 ? 2 : 3));
+      // Build contour levels descending from epicentral MMI.
+      // Skip MMI < 3 for moderate quakes (≤M6.5) to avoid unrealistic far-field rings.
+      const minMmiLevel = mag > 6.5 ? 2 : 3;
+      const levels = [];
+      for (let mmi = Math.min(epicMmi, 10); mmi >= minMmiLevel; mmi--) {
+        levels.push(mmi);
+      }
       if (levels.length === 0) return null;
 
-      const maxRadius = Math.pow(10, mag / 2) * 5;
+      // Corrected max-radius cap: 10^(mag/2) / 2  →  M5≈158 km, M6≈500 km, M7≈1581 km
+      const maxRadius = Math.pow(10, mag / 2) / 2;
 
-      const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
-
-      // Depth factor: deeper quakes spread energy over wider area
-      const depthFactor = Math.min(1.5, 1 + depth / 30);
+      const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light',
+        'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
 
       const features = [];
 
       for (const mmi of levels) {
-        let radiusKm = getShakemapRadius(mag, mmi);
-        if (radiusKm < 10 || radiusKm > maxRadius) continue;
+        // getShakemapRadius now uses hypocentral inversion: rEpi = √(rHypo² − depth²)
+        let radiusKm = getShakemapRadius(mag, mmi, depth);
+        if (radiusKm <= 0 || radiusKm < 5) continue;
 
-        radiusKm *= depthFactor;
+        // Soil-type amplification
         radiusKm *= Math.sqrt(siteAmp);
-        if (radiusKm < 10 || radiusKm > maxRadius) continue;
+        if (radiusKm > maxRadius) continue;
 
         const radiusM = radiusKm * 1000;
         const points = [];
-        const segments = 32;
+        const segments = 36;
 
         for (let j = 0; j <= segments; j++) {
           const angle = (j / segments) * 2 * Math.PI;
