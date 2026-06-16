@@ -212,6 +212,27 @@ export default {
      * Generate and render ShakeMap contours for an event locally.
      * Uses the same formula as App.vue's generateApproximateShakeMap.
      */
+    /**
+     * Consistent MMI estimation formula used for both Shakemap and Timeline.
+     * Empirically calibrated: M ~7.8 → MMI 10 at epicenter, M ~5.0 → MMI 6-7.
+     * Falls off as ~log10(distance) from source.
+     */
+    function estimateMMI(mag, distanceKm) {
+      const d = Math.max(5, distanceKm);
+      let mmi = 1.5 * mag - 2.5 * Math.log10(d) + 1.5;
+      return Math.min(10, Math.max(0.5, mmi));
+    }
+
+    /**
+     * Compute the radius (km) where intensity drops to a given MMI level.
+     * Derived from: mmi = 1.5*mag - 2.5*log10(radius) + 1.5
+     * => radius = 10^((1.5*mag + 1.5 - mmi) / 2.5)
+     */
+    function getShakemapRadius(mag, mmi) {
+      const r = Math.pow(10, (1.5 * mag + 1.5 - mmi) / 2.5);
+      return Math.min(1000, r);
+    }
+
     function generatedShakeMapForEvent(event) {
       const mag = event.magnitude || 0;
       const depth = event.depth || 10;
@@ -221,21 +242,24 @@ export default {
 
       if (!lat || !lng || mag < 4.5) return;
 
-      const levels = [8, 7, 6, 5, 4, 3, 2].filter(mmi => mmi <= 1.5 * mag - 1);
+      // Epicentral MMI (at ~5km from hypocenter)
+      const epicMmi = Math.round(Math.min(10, Math.max(1, estimateMMI(mag, 5))));
+
+      // Only render MMI levels from 2 up to epicentral
+      const levels = [epicMmi, epicMmi - 1, epicMmi - 2, epicMmi - 3, epicMmi - 4, epicMmi - 5]
+        .filter(mmi => mmi >= 2);
+
       if (levels.length === 0) return;
 
       const mmiDesc = ['', 'Not felt', 'Weak', 'Weak', 'Light', 'Moderate', 'Strong', 'Very strong', 'Severe', 'Violent', 'Extreme'];
-      // Attenuation coefficient (higher = smaller radii for a given MMI)
-      // c=2.5 gives realistic radii: M5.0 MMI 5 ≈ 52km, M7.8 MMI 8 ≈ 574km
-      const c = 2.5;
-      // Depth factor: deeper quakes spread energy over wider area → larger contour radii
+
+      // Depth factor: deeper quakes spread energy over wider area
       const depthFactor = Math.min(1.5, 1 + depth / 30);
 
       const features = [];
 
       for (const mmi of levels) {
-        let radiusKm = Math.pow(10, (mag - Math.log10(mmi)) / c);
-        radiusKm = Math.min(radiusKm, 1000);
+        let radiusKm = getShakemapRadius(mag, mmi);
         if (radiusKm < 5) continue;
         radiusKm *= depthFactor;
         radiusKm *= Math.sqrt(siteAmp);

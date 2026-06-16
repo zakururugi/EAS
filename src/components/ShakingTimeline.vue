@@ -94,9 +94,11 @@ function calculateArrivalTimes(distanceKm, depthKm) {
  * Derived from: radius = 10^((mag - log10(mmi)) / c)  =>  mmi = 10^(mag - c * log10(distance))
  */
 function estimateMMI(mag, distanceKm) {
-  // Using same attenuation coefficient as ShakeMap (c=2.5) for consistency
-  const c = 2.5;
-  let mmi = Math.pow(10, mag - c * Math.log10(Math.max(1, distanceKm)));
+  // Consistent formula used across Shakemap and Timeline
+  // Empirically calibrated: M7.8 → MMI 10 at source, M5.0 → MMI 6-7
+  // Falls off as ~log10(distance): ~7 points per 100x distance
+  const d = Math.max(5, distanceKm);
+  let mmi = 1.5 * mag - 2.5 * Math.log10(d) + 1.5;
   return Math.min(10, Math.max(0.5, mmi));
 }
 
