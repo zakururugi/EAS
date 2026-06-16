@@ -232,27 +232,22 @@ export default {
     }
 
     /**
-     * Compute the epicentral radius (km) where surface MMI equals `mmi`.
+     * Compute the epicentral radius (km) at which the MMI drops to `mmi`.
      *
-     * Method: invert the hypocentral-distance IPE.
-     *   rHypo = 10^((1.5·mag + 0.5 − mmi) / 3)
-     *   rEpi  = √(rHypo² − depth²)   (0 if depth > rHypo → MMI unreachable at surface)
+     * Uses the pure epicentral inversion so circles are ALWAYS generated even
+     * for deep earthquakes. Depth affects WHICH levels are shown (via epicMmi),
+     * not whether circles exist at all.
      *
-     * maxRadius uses the corrected formula: 10^(mag/2) / 2
-     *   → M5 ≈ 158 km, M6 ≈ 500 km, M7 ≈ 1 581 km
-     *   (previous ×5 multiplier was a 10× error giving M5=1 581 km)
+     *   r = 10^((1.5·mag + 0.5 − mmi) / 3)
      *
-     * @param {number} mag    – moment magnitude
-     * @param {number} mmi    – target MMI level
-     * @param {number} depthKm – focal depth in km (default 10)
-     * @returns {number} epicentral radius in km, or 0 if unreachable
+     * maxRadius = 10^(mag/2) / 2  →  M5≈158 km, M6≈500 km, M7≈1581 km
+     *   (previous ×5 multiplier was a 10× error; was giving M5=1581 km)
+     * Hard cap at 800 km prevents unrealistically large outer rings for M7+.
      */
-    function getShakemapRadius(mag, mmi, depthKm = 10) {
-      const rHypo = Math.pow(10, (1.5 * mag + 0.5 - mmi) / 3.0);
-      const rEpiSq = rHypo * rHypo - depthKm * depthKm;
-      if (rEpiSq <= 0) return 0; // focal depth > reach → MMI level not felt at surface
-      const maxRadius = Math.pow(10, mag / 2) / 2; // FIXED: was ×5 (10× too large)
-      return Math.min(maxRadius, Math.sqrt(rEpiSq));
+    function getShakemapRadius(mag, mmi) {
+      const r = Math.pow(10, (1.5 * mag + 0.5 - mmi) / 3.0);
+      const maxRadius = Math.min(Math.pow(10, mag / 2) / 2, 800);
+      return Math.min(maxRadius, r);
     }
 
     function generatedShakeMapForEvent(event) {
@@ -287,15 +282,13 @@ export default {
       const features = [];
 
       for (const mmi of levels) {
-        // getShakemapRadius now uses hypocentral inversion: rEpi = √(rHypo² − depth²)
-        // Returns 0 when depth > rHypo (MMI level unreachable at the surface)
-        let radiusKm = getShakemapRadius(mag, mmi, depth);
-        if (radiusKm <= 0 || radiusKm < 5) continue;
+        // Pure epicentral radius formula — always positive, circles always generated.
+        // Depth affects which MMI levels appear (via epicMmi above), not the ring sizes.
+        let radiusKm = getShakemapRadius(mag, mmi);
+        if (radiusKm < 5) continue;
 
-        // Soil-type amplification: soft soils (siteAmp > 1) slightly widen the felt area
+        // Soil-type amplification: soft soil (siteAmp > 1) slightly widens the felt area
         radiusKm *= Math.sqrt(siteAmp);
-
-        // Hard cap — never draw past magnitude-scaled limit
         if (radiusKm > maxRadius) continue;
 
         const radiusM = radiusKm * 1000;
