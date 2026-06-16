@@ -307,20 +307,32 @@ export default {
      */
 
     /**
-     * IPE: estimates MMI using hypocentral distance for accuracy.
-     * Accounts for focal depth so deep quakes produce less surface shaking.
-     * Formula: mmi = 1.5·mag + 0.5 − 3.0·log₁₀(rHypo)
-     * Extra decay term for rHypo > 200 km.
+     * IPE: estimates MMI at a given epicentral distance and focal depth.
+     *
+     * Uses an effective depth capped at 70 km. Deep-focus earthquakes
+     * (common in Philippine subduction zones, 100-700 km) transmit energy
+     * efficiently through the mantle, so treating raw depth as distance
+     * drastically underestimates surface shaking.
+     *
+     * A gentle separate penalty of −0.3 MMI per 100 km beyond 70 km
+     * accounts for the real (but moderate) reduction from deep focus.
+     *
+     * Far-field decay (−0.002 per km beyond 200 km epicentral distance)
+     * is applied separately so it doesn't double-count with depth.
      *
      * @param {number} mag        – moment magnitude
-     * @param {number} epicDistKm – epicentral distance in km (surface distance)
+     * @param {number} epicDistKm – epicentral (surface) distance in km
      * @param {number} depthKm    – focal depth in km (default 10)
      */
     function estimateMMI(mag, epicDistKm, depthKm = 10) {
-      const rHypo = Math.sqrt(epicDistKm * epicDistKm + depthKm * depthKm);
+      const effDepth = Math.min(depthKm, 70);
+      const rHypo = Math.sqrt(epicDistKm * epicDistKm + effDepth * effDepth);
       const d = Math.max(5, rHypo);
       let mmi = 1.5 * mag + 0.5 - 3.0 * Math.log10(d);
-      if (d > 200) mmi -= 0.002 * (d - 200);
+      // Gentle deep-focus penalty: −0.3 MMI per 100 km beyond 70 km
+      if (depthKm > 70) mmi -= 0.003 * (depthKm - 70);
+      // Far-field epicentral decay
+      if (epicDistKm > 200) mmi -= 0.002 * (epicDistKm - 200);
       return Math.min(10, Math.max(1, Math.round(mmi * 10) / 10));
     }
 

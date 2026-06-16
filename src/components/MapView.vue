@@ -214,20 +214,32 @@ export default {
      */
 
     /**
-     * IPE: estimates MMI using hypocentral distance for accuracy.
-     * Accounts for focal depth so deep quakes produce less surface shaking.
-     * Formula: mmi = 1.5·mag + 0.5 − 3.0·log₁₀(rHypo)
-     * Extra decay term for rHypo > 200 km.
+     * IPE: estimates MMI at a given epicentral distance and focal depth.
+     *
+     * Uses an effective depth capped at 70 km. Deep-focus earthquakes
+     * (common in Philippine subduction zones, 100-700 km) transmit energy
+     * efficiently through the mantle, so treating raw depth as distance
+     * drastically underestimates surface shaking.
+     *
+     * A gentle separate penalty of −0.3 MMI per 100 km beyond 70 km
+     * accounts for the real (but moderate) reduction from deep focus.
+     *
+     * Far-field decay (−0.002 per km beyond 200 km epicentral distance)
+     * is applied separately so it doesn't double-count with depth.
      *
      * @param {number} mag        – moment magnitude
-     * @param {number} epicDistKm – epicentral distance in km (surface distance)
+     * @param {number} epicDistKm – epicentral (surface) distance in km
      * @param {number} depthKm    – focal depth in km (default 10)
      */
     function estimateMMI(mag, epicDistKm, depthKm = 10) {
-      const rHypo = Math.sqrt(epicDistKm * epicDistKm + depthKm * depthKm);
+      const effDepth = Math.min(depthKm, 70);
+      const rHypo = Math.sqrt(epicDistKm * epicDistKm + effDepth * effDepth);
       const d = Math.max(5, rHypo);
       let mmi = 1.5 * mag + 0.5 - 3.0 * Math.log10(d);
-      if (d > 200) mmi -= 0.002 * (d - 200);
+      // Gentle deep-focus penalty: −0.3 MMI per 100 km beyond 70 km
+      if (depthKm > 70) mmi -= 0.003 * (depthKm - 70);
+      // Far-field epicentral decay
+      if (epicDistKm > 200) mmi -= 0.002 * (epicDistKm - 200);
       return Math.min(10, Math.max(1, Math.round(mmi * 10) / 10));
     }
 
@@ -380,72 +392,122 @@ export default {
       const h = canvas.height;
       const midY = h / 2;
       const mag = event?.magnitude || 5;
+      const depth = event?.depth || 10;
 
-      // Logarithmic amplitude scaling: larger magnitudes produce visibly stronger wiggles
-      const amplitude = Math.min(30, Math.max(8, Math.pow(mag, 1.5) / 8));
-      const pWaveFreq = 12;
-      const sWaveFreq = 4;
-      const duration = 5000;
-      const pWaveDuration = 200;
+      // ── Amplitude: exponential scaling (each magnitude unit ≈ 2× ground motion)
+      // M5 fills ~20% of canvas height, M7 ~55%, M8 ~80%
+      const amplitude = Math.min(midY * 0.85, midY * 0.06 * Math.pow(2, mag - 4));
+
+      // ── Frequencies decrease with magnitude (large quakes = lower dominant freq)
+      const pFreq  = Math.max(2, 15 - mag);           // P:  7–13 Hz
+      const sFreq  = Math.max(1, 8 - mag * 0.7);      // S:  2–5 Hz
+      const sfFreq = Math.max(0.3, 2 - mag * 0.15);   // Surface: 0.5–1.5 Hz
+
+      // ── Timing (normalised to a display window)
+      const totalSec     = Math.max(20, mag * 5);      // M5→25s, M7→35s
+      const pArrivalSec  = 2;                           // P arrives at 2s
+      const sArrivalSec  = pArrivalSec + Math.max(3, 2 + depth / 30);
+      const sfArrivalSec = sArrivalSec + 2;
+      const pDurSec      = Math.max(2, mag - 3);       // P coda length
+      const sDurSec      = Math.max(5, mag * 2);       // S + coda decay τ
+
+      const animDuration = 6000; // ms
       const startTime = performance.now();
 
-      // Precompute noise array to avoid per-frame random flickering
-      const numPoints = Math.floor(w / 2);
-      const noiseBuffer = new Float32Array(numPoints);
-      for (let i = 0; i < numPoints; i++) {
-        noiseBuffer[i] = (Math.random() - 0.5) * 0.5;
-      }
+      // Pre-compute stable noise buffer
+      const numPts = Math.floor(w);
+      const noiseBuffer = new Float32Array(numPts);
+      for (let i = 0; i < numPts; i++) noiseBuffer[i] = (Math.random() - 0.5) * 0.3;
 
       function draw() {
-        const elapsed = performance.now() - startTime;
-        const progress = Math.min(1, elapsed / duration);
+        const elapsed  = performance.now() - startTime;
+        const progress = Math.min(1, elapsed / animDuration);
         ctx.clearRect(0, 0, w, h);
 
+        // Background
         ctx.fillStyle = '#0f0f23';
         ctx.fillRect(0, 0, w, h);
 
+        // Vertical grid
         ctx.strokeStyle = 'rgba(35,53,84,0.4)';
-        ctx.lineWidth = 0.5;
-        for (let x = 0; x < w; x += 20) {
-          ctx.beginPath();
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, h);
-          ctx.stroke();
+        ctx.lineWidth   = 0.5;
+        for (let gx = 0; gx < w; gx += 20) {
+          ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
         }
+        // Centre baseline
+        ctx.strokeStyle = 'rgba(35,53,84,0.6)';
+        ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(w, midY); ctx.stroke();
 
+        // ── Waveform
         ctx.beginPath();
         ctx.strokeStyle = '#00e676';
         ctx.lineWidth = 1.5;
+        const visPts = Math.floor(numPts * progress);
 
-        for (let i = 0; i < numPoints; i++) {
-          const time = (i / numPoints) * duration * progress;
-          const t = time / 1000;
-          const envelope = Math.exp(-t * 1.2);
-          const pWave = (time < pWaveDuration)
-            ? Math.sin(2 * Math.PI * pWaveFreq * t) * 0.8 * (1 - time / pWaveDuration)
-            : 0;
-          const sWave = (time >= pWaveDuration)
-            ? Math.sin(2 * Math.PI * sWaveFreq * t) * envelope
-            : 0;
-          const signal = (pWave + sWave) * amplitude;
-          const noise = noiseBuffer[i];
-          const y = midY + signal + noise;
-          const x = (i / numPoints) * w * progress;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
+        for (let i = 0; i < visPts; i++) {
+          const t = (i / numPts) * totalSec;
+          let sig = 0;
+
+          // P-wave: early, high-freq, low-amplitude
+          if (t >= pArrivalSec && t < pArrivalSec + pDurSec) {
+            const tp = t - pArrivalSec;
+            const env = Math.sin(Math.PI * tp / pDurSec) * 0.3;
+            sig += Math.sin(2 * Math.PI * pFreq * tp) * env;
+          }
+
+          // S-wave: dominant phase, sharp onset, slow exponential decay
+          if (t >= sArrivalSec) {
+            const ts  = t - sArrivalSec;
+            const env = Math.exp(-ts / sDurSec) * (1 - Math.exp(-ts * 3));
+            sig += Math.sin(2 * Math.PI * sFreq * ts) * env;
+            sig += Math.sin(2 * Math.PI * sFreq * 2.3 * ts) * env * 0.3; // harmonic
+          }
+
+          // Surface waves: long-period, for M ≥ 5.5 only
+          if (t >= sfArrivalSec && mag >= 5.5) {
+            const tsf = t - sfArrivalSec;
+            const env = Math.exp(-tsf / (sDurSec * 1.5)) * (1 - Math.exp(-tsf * 1.5));
+            sig += Math.sin(2 * Math.PI * sfFreq * tsf) * env * 0.5;
+          }
+
+          sig = sig * amplitude + noiseBuffer[i] * 2;
+          const px = (i / numPts) * w;
+          const py = midY + sig;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
         ctx.stroke();
 
-        // Clear disclaimer banner area and redraw it on top of waveform
+        // ── Phase markers (dashed lines + labels)
+        ctx.lineWidth = 1;
+        if (progress > pArrivalSec / totalSec) {
+          const px = (pArrivalSec / totalSec) * w;
+          ctx.strokeStyle = 'rgba(255,235,59,0.5)';
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#ffeb3b';
+          ctx.font = 'bold 8px sans-serif';
+          ctx.fillText('P', px + 2, h - 4);
+        }
+        if (progress > sArrivalSec / totalSec) {
+          const sx = (sArrivalSec / totalSec) * w;
+          ctx.strokeStyle = 'rgba(255,82,82,0.5)';
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#ff5252';
+          ctx.font = 'bold 8px sans-serif';
+          ctx.fillText('S', sx + 2, h - 4);
+        }
+
+        // Disclaimer banner
         ctx.fillStyle = 'rgba(15, 15, 35, 0.72)';
         ctx.fillRect(0, 0, w, 14);
         ctx.fillStyle = '#ff9800';
         ctx.font = 'bold 8px sans-serif';
-        ctx.fillText('⚠ Demo — not actual seismic data', 4, 10);
+        ctx.fillText('\u26A0 Simulated \u2014 not actual seismic data', 4, 10);
 
-        if (progress < 1) {
-          seismogramAnimId = requestAnimationFrame(draw);
-        }
+        if (progress < 1) seismogramAnimId = requestAnimationFrame(draw);
       }
 
       if (seismogramAnimId) cancelAnimationFrame(seismogramAnimId);
