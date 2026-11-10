@@ -374,7 +374,7 @@ export default {
         html: `<div class="mag-marker-inner" style="
           width:${size}px; height:${size}px;
           background:${color};
-          border:${isSelected ? '3px solid #ffffff' : '2px solid rgba(255,255,255,0.7)'};
+          border:${isSelected ? '3px solid #ffffff' : event.source === 'USGS' ? '2px dashed #9aa7bd' : '2px solid rgba(255,255,255,0.7)'};
           box-shadow:${isSelected ? '0 0 12px rgba(100,255,218,0.6)' : '0 0 4px rgba(0,0,0,0.5)'};
           font-size:${fontSize}px;
           line-height:${size}px;
@@ -546,7 +546,7 @@ export default {
               <p><strong>Depth:</strong> ${event.depth?.toFixed(1) || '?'} km</p>
               ${event.mmi ? `<p><strong>MMI:</strong> ${event.mmi}</p>` : ''}
               ${event.felt ? `<p><strong>Felt reports:</strong> ${event.felt}</p>` : ''}
-              ${event.source ? `<p><strong>Source:</strong> ${event.source}</p>` : ''}
+              ${event.source === 'USGS' ? `<p><strong>Source:</strong> USGS supplemental (not independently alert-eligible)</p>` : event.source ? `<p><strong>Source:</strong> PHIVOLCS</p>` : ''}
             </div>
             <div class="seismogram-container">
               <canvas class="seismogram-canvas" width="276" height="60"></canvas>
@@ -554,7 +554,7 @@ export default {
             </div>
             <div class="popup-actions" style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
               <button class="popup-btn shake-btn" data-event-id="${event.id}">
-                Show ShakeMap
+                Show model estimate
               </button>
               <button class="popup-btn felt-btn-popup" data-event-id="${event.id}">
                 I felt it
