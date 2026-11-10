@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 INSERT INTO schema_migrations (version)
-VALUES ('20261110_eas_canonical_archive_v4')
+VALUES ('20261110_eas_canonical_archive_v5')
 ON CONFLICT (version) DO NOTHING;
 
 
@@ -349,3 +349,20 @@ CREATE TABLE IF NOT EXISTS intensity_products (
 
 CREATE INDEX IF NOT EXISTS idx_intensity_products_source_type
     ON intensity_products (event_source_id, product_type, retrieved_at DESC);
+
+
+ALTER TABLE intensity_observations
+    ADD COLUMN IF NOT EXISTS source_observation_id TEXT,
+    ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION CHECK (latitude IS NULL OR latitude BETWEEN -90 AND 90),
+    ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION CHECK (longitude IS NULL OR longitude BETWEEN -180 AND 180),
+    ADD COLUMN IF NOT EXISTS sample_count INTEGER CHECK (sample_count IS NULL OR sample_count >= 0);
+
+ALTER TABLE intensity_observations
+    DROP CONSTRAINT IF EXISTS intensity_observations_observation_type_check;
+ALTER TABLE intensity_observations
+    ADD CONSTRAINT intensity_observations_observation_type_check
+    CHECK (observation_type IN ('observed', 'reported', 'instrumental', 'modelled', 'unknown'));
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intensity_observations_source_observation
+    ON intensity_observations (earthquake_event_id, provider, product_type, source_observation_id)
+    WHERE source_observation_id IS NOT NULL;
