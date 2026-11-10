@@ -120,6 +120,7 @@ Never prefix database credentials, FCM private keys, or cron secrets with `VITE_
 |---|---|
 | `GET /api/events/latest` | Latest PHIVOLCS events; provider failures return an explicit error, not an empty success |
 | `GET /api/events/history` | Keyset-paginated archive with inclusive date filters and source provenance |
+| `GET /api/events/usgs-products?eventId=...` | Official USGS ShakeMap contours and DYFI reports when published |
 | `GET /api/events/:eventId` | Event details |
 | `GET /api/events/:eventId/contours` | Illustrative modelled contours (not official observations) |
 | `POST /api/push/subscribe` | Register an FCM token |
@@ -137,7 +138,8 @@ The initial EAS database schema includes the existing device, subscription, and 
 - `event_sources`: provider-specific source values and raw payload provenance.
 - `event_matches`: auditable cross-provider matching decisions.
 - `event_revisions`: source and canonical event change history.
-- `intensity_observations`: explicitly typed PEIS/MMI observations and modelled products.
+- `intensity_observations`: explicitly typed PEIS/MMI observations, including reported DYFI locality data.
+- `intensity_products`: versioned official provider products such as USGS ShakeMap and DYFI.
 - `source_sync_state`: independent provider and backfill checkpoints.
 - `notification_deliveries`: recipient-level idempotency and retry state.
 - `schema_migrations`: migration version ledger.
