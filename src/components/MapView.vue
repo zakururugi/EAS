@@ -179,7 +179,7 @@ export default {
     }
 
     /**
-     * On-demand ShakeMap rendering: only render when user clicks "Show ShakeMap" button.
+     * On-demand ShakeMap rendering: only render when user clicks "Show modelled intensity estimate" button.
      * Generates contours using the provided generateApproximateShakeMap function on the event.
      */
     function onShowShakeMap(e) {
@@ -756,7 +756,7 @@ export default {
           return `<div class="legend-item"><span style="background:${color}"></span> ${roman} – ${desc}</div>`;
         }).join('');
         div.innerHTML = `
-          <div class="legend-title">ShakeMap Intensity</div>
+          <div class="legend-title">Estimated intensity · not official</div>
           <div class="legend-items">${items}</div>
         `;
         return div;
