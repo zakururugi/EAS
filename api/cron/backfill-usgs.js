@@ -5,6 +5,7 @@
  * records are supplemental and are never passed to the push-alert dispatcher.
  */
 
+import { randomUUID } from 'node:crypto';
 import { fetchUsgsEvents } from '../_lib/sources/usgs.js';
 import { persistUsgsEvent } from '../_lib/ingestion/persist-usgs-event.js';
 import { recordUsgsShadowMatch } from '../_lib/events/matching.js';
@@ -47,47 +48,69 @@ export default async function handler(req, res) {
     return;
   }
 
+  const leaseOwner = randomUUID();
+  let leaseAcquired = false;
+
   try {
     const now = new Date();
     await query(
-      `INSERT INTO source_sync_state (
-         provider, backfill_from, backfill_to, backfill_completed_through,
-         last_attempt_at, status, updated_at
-       ) VALUES ('USGS', $1, $2, $1, NOW(), 'running', NOW())
-       ON CONFLICT (provider) DO UPDATE SET
-         backfill_from = COALESCE(source_sync_state.backfill_from, EXCLUDED.backfill_from),
-         backfill_to = COALESCE(source_sync_state.backfill_to, EXCLUDED.backfill_to),
-         backfill_completed_through = COALESCE(
-           source_sync_state.backfill_completed_through, EXCLUDED.backfill_completed_through
-         ),
-         last_attempt_at = NOW(),
-         status = 'running',
-         last_error = NULL,
-         updated_at = NOW()`,
-      [BACKFILL_START, now.toISOString()]
+      `INSERT INTO source_sync_state (provider, status, updated_at)
+       VALUES ('USGS', 'never_run', NOW())
+       ON CONFLICT (provider) DO NOTHING`
+    );
+
+    const lease = await query(
+      `UPDATE source_sync_state
+       SET lease_owner = $1, lease_expires_at = NOW() + INTERVAL '60 seconds',
+           last_attempt_at = NOW(), status = 'running', updated_at = NOW()
+       WHERE provider = 'USGS'
+         AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
+       RETURNING provider`,
+      [leaseOwner]
+    );
+    leaseAcquired = lease.rows.length === 1;
+    if (!leaseAcquired) {
+      res.status(409).json({ checked: false, message: 'A USGS backfill batch is already running.' });
+      return;
+    }
+
+    await query(
+      `UPDATE source_sync_state
+       SET backfill_from = COALESCE(backfill_from, $1),
+           backfill_to = COALESCE(backfill_to, $2),
+           backfill_completed_through = COALESCE(backfill_completed_through, $1),
+           last_error = NULL, updated_at = NOW()
+       WHERE provider = 'USGS' AND lease_owner = $3`,
+      [BACKFILL_START, now.toISOString(), leaseOwner]
     );
 
     const stateResult = await query(
       `SELECT backfill_from, backfill_to, backfill_completed_through
-       FROM source_sync_state WHERE provider = 'USGS'`
+       FROM source_sync_state
+       WHERE provider = 'USGS' AND lease_owner = $1`,
+      [leaseOwner]
     );
     const state = stateResult.rows[0];
-    const batchStart = new Date(state.backfill_completed_through || state.backfill_from || BACKFILL_START);
+    if (!state) throw new Error('USGS backfill lease was lost before the batch started.');
+
+    const batchStart = new Date(
+      state.backfill_completed_through || state.backfill_from || BACKFILL_START
+    );
     const backfillEnd = new Date(state.backfill_to || now);
 
     if (batchStart >= backfillEnd) {
       await query(
         `UPDATE source_sync_state
          SET status = 'healthy', last_success_at = NOW(), updated_at = NOW()
-         WHERE provider = 'USGS'`
+         WHERE provider = 'USGS' AND lease_owner = $1`,
+        [leaseOwner]
       );
       res.status(200).json({ checked: true, done: true, eventsFetched: 0 });
       return;
     }
 
-    const batchEnd = addDays(batchStart, BATCH_DAYS) < backfillEnd
-      ? addDays(batchStart, BATCH_DAYS)
-      : backfillEnd;
+    const proposedEnd = addDays(batchStart, BATCH_DAYS);
+    const batchEnd = proposedEnd < backfillEnd ? proposedEnd : backfillEnd;
 
     const events = await fetchUsgsEvents({
       startTime: batchStart.toISOString(),
@@ -112,8 +135,8 @@ export default async function handler(req, res) {
            status = $2,
            last_error = NULL,
            updated_at = NOW()
-       WHERE provider = 'USGS'`,
-      [batchEnd.toISOString(), done ? 'healthy' : 'running']
+       WHERE provider = 'USGS' AND lease_owner = $3`,
+      [batchEnd.toISOString(), done ? 'healthy' : 'running', leaseOwner]
     );
 
     res.status(200).json({
@@ -133,12 +156,25 @@ export default async function handler(req, res) {
       await query(
         `UPDATE source_sync_state
          SET status = 'failed', last_error = $1, last_attempt_at = NOW(), updated_at = NOW()
-         WHERE provider = 'USGS'`,
-        [error.message]
+         WHERE provider = 'USGS' AND lease_owner = $2`,
+        [error.message, leaseOwner]
       );
     } catch (stateError) {
       console.error('[cron/backfill-usgs] Could not update sync state:', stateError.message);
     }
     res.status(502).json({ checked: false, message: 'USGS historical backfill batch failed.' });
+  } finally {
+    if (leaseAcquired) {
+      try {
+        await query(
+          `UPDATE source_sync_state
+           SET lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW()
+           WHERE provider = 'USGS' AND lease_owner = $1`,
+          [leaseOwner]
+        );
+      } catch (error) {
+        console.error('[cron/backfill-usgs] Failed to release lease:', error.message);
+      }
+    }
   }
 }
