@@ -206,10 +206,10 @@ export function extractUsgsProducts(properties = {}, baseUrl = 'https://earthqua
 
   return {
     shakemap: extract('shakemap', {
-      contour: /cont_mi\\.(?:json|geojson)$/i,
+      contour: /cont_mi\.(?:json|geojson)$/i,
     }),
     dyfi: extract('dyfi', {
-      geoJson: /dyfi_geo\\.(?:json|geojson)$/i,
+      geoJson: /dyfi_geo\.(?:json|geojson)$/i,
     }),
   };
 }
