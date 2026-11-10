@@ -182,7 +182,64 @@ export default {
      * On-demand ShakeMap rendering: only render when user clicks "Show modelled intensity estimate" button.
      * Generates contours using the provided generateApproximateShakeMap function on the event.
      */
-    function onShowShakeMap(e) {
+    function renderOfficialShakeMap(geojson) {
+      if (!geojson || !Array.isArray(geojson.features) || geojson.features.length === 0) {
+        return false;
+      }
+
+      const getIntensity = (feature) => {
+        const properties = feature?.properties || {};
+        const value = properties.value ?? properties.MMI ?? properties.mmi ?? properties.contour;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+
+      const layer = L.geoJSON(geojson, {
+        style: (feature) => {
+          const value = getIntensity(feature);
+          const level = value === null ? null : Math.max(1, Math.min(10, Math.round(value)));
+          const color = level === null ? '#9aa7bd' : (MMI_COLORS[level] || '#9aa7bd');
+          return { color, weight: 2, opacity: 0.9, fillColor: color, fillOpacity: 0.12 };
+        },
+        onEachFeature: (feature, featureLayer) => {
+          const value = getIntensity(feature);
+          if (value !== null) {
+            featureLayer.bindTooltip(`Official USGS ShakeMap · MMI ${value.toFixed(1)}`, {
+              sticky: true,
+              className: 'shakemap-tooltip',
+            });
+          }
+        },
+      });
+
+      layer.addTo(shakemapLayerGroup);
+      if (legendControl && map) {
+        map.removeControl(legendControl);
+        legendControl = null;
+      }
+      legendControl = L.control({ position: 'bottomright' });
+      legendControl.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-legend shakemap-legend');
+        const items = Object.entries(MMI_DESCRIPTIONS).map(([mmi, desc]) => {
+          const color = MMI_COLORS[mmi] || '#9aa7bd';
+          const roman = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'][mmi] || mmi;
+          return `<div class="legend-item"><span style="background:${color}"></span> ${roman} – ${desc}</div>`;
+        }).join('');
+        div.innerHTML = `
+          <div class="legend-title">Official USGS ShakeMap · MMI</div>
+          <div class="legend-items">${items}</div>
+          <div class="legend-note">USGS product · source values kept separate</div>
+        `;
+        return div;
+      };
+      legendControl.addTo(map);
+
+      const bounds = layer.getBounds();
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 8 });
+      return true;
+    }
+
+    async function onShowShakeMap(e) {
       const eventId = e.detail;
       if (!eventId) return;
 
@@ -197,7 +254,23 @@ export default {
         legendControl = null;
       }
 
-      // Generate the ShakeMap contours from the event data
+      // Prefer the official USGS ShakeMap product when the selected record is
+      // USGS-backed. If no product exists, fall back to the clearly labelled
+      // local EAS model estimate.
+      if (event.source === 'USGS' && event.sourceEventId) {
+        try {
+          const response = await fetch(
+            `/api/events/usgs-products?eventId=${encodeURIComponent(event.sourceEventId)}`
+          );
+          if (response.ok) {
+            const products = await response.json();
+            if (renderOfficialShakeMap(products.shakemap?.geojson)) return;
+          }
+        } catch (error) {
+          console.warn('[MapView] Official USGS ShakeMap unavailable:', error.message);
+        }
+      }
+
       const eventData = {
         magnitude: event.magnitude,
         depth: event.depth,
@@ -554,7 +627,7 @@ export default {
             </div>
             <div class="popup-actions" style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
               <button class="popup-btn shake-btn" data-event-id="${event.id}">
-                Show model estimate
+                Show intensity layer
               </button>
               <button class="popup-btn felt-btn-popup" data-event-id="${event.id}">
                 I felt it
