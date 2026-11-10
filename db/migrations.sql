@@ -400,3 +400,15 @@ $$;
 
 REVOKE ALL ON FUNCTION public.create_user_if_not_exists(VARCHAR) FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION public.find_subscriptions_for_epicenter(DOUBLE PRECISION, DOUBLE PRECISION, REAL) FROM PUBLIC, anon, authenticated, service_role;
+
+
+-- Keep future public-schema objects private by default as well.
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE USAGE, SELECT ON SEQUENCES FROM anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE EXECUTE ON FUNCTIONS FROM anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon, authenticated, service_role;
