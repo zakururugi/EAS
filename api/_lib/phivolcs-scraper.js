@@ -126,8 +126,18 @@ function looksLikeEarthquakeHeader($, table) {
 function readTableRows($, table) {
   return $(table).find('tr').toArray().map((row) => {
     const cells = $(row).find('td').toArray();
-    if (cells.length < 6) return null;
-    return parsePhivolcsEventRow(cells.slice(0, 6).map((cell) => $(cell).text()));
+    if (cells.length < 6) return { isDataRow: false, event: null };
+
+    const values = cells.slice(0, 6).map((cell) => $(cell).text().trim());
+    const headerText = values.join(' ').toLowerCase();
+    const isHeaderRow =
+      /date|time/.test(headerText) &&
+      /latitude|\\blat\\b/.test(headerText) &&
+      /longitude|\\blon\\b/.test(headerText) &&
+      /depth/.test(headerText);
+
+    if (isHeaderRow) return { isDataRow: false, event: null };
+    return { isDataRow: true, event: parsePhivolcsEventRow(values) };
   });
 }
 
@@ -148,8 +158,8 @@ export function parsePhivolcsHtml(html) {
 
   for (const table of tables) {
     const rows = readTableRows($, table);
-    const validRows = rows.filter(Boolean);
-    const dataRowCount = rows.filter((row) => row !== null).length;
+    const validRows = rows.map((row) => row.event).filter(Boolean);
+    const dataRowCount = rows.filter((row) => row.isDataRow).length;
     const recognizedHeader = looksLikeEarthquakeHeader($, table);
 
     if (validRows.length > 0) {
