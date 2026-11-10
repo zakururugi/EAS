@@ -53,6 +53,28 @@ export async function persistPhivolcsEvent(event, query) {
   const value = normalizeEvent(event);
   const contentHash = createHash('sha256').update(value.rawPayload).digest('hex');
 
+  const previousSourceResult = await query(
+    `SELECT id, source_revision, content_hash, raw_payload
+     FROM event_sources
+     WHERE provider = 'PHIVOLCS' AND provider_event_id = $1`,
+    [value.providerEventId]
+  );
+  const previousSource = previousSourceResult.rows[0];
+  if (previousSource?.content_hash && previousSource.content_hash !== contentHash) {
+    await query(
+      `INSERT INTO event_source_revisions (
+         event_source_id, source_revision, content_hash, raw_payload
+       ) VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (event_source_id, content_hash) DO NOTHING`,
+      [
+        previousSource.id,
+        previousSource.source_revision,
+        previousSource.content_hash,
+        JSON.stringify(previousSource.raw_payload || {}),
+      ]
+    );
+  }
+
   const sourceResult = await query(
     `INSERT INTO event_sources (
        provider, provider_event_id, source_origin_time, source_latitude,
