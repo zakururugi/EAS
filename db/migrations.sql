@@ -302,3 +302,7 @@ ON CONFLICT (version) DO NOTHING;
 ALTER TABLE source_sync_state
     ADD COLUMN IF NOT EXISTS lease_owner TEXT,
     ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+
+
+ALTER TABLE source_sync_state
+    ADD COLUMN IF NOT EXISTS backfill_cursor TEXT;
