@@ -62,7 +62,7 @@ export default async function handler(req, res) {
     const lease = await query(
       `UPDATE source_sync_state
        SET lease_owner = $1, lease_expires_at = NOW() + INTERVAL '60 seconds',
-           last_attempt_at = NOW(), status = 'running', updated_at = NOW()
+           backfill_last_attempt_at = NOW(), backfill_status = 'running', updated_at = NOW()
        WHERE provider = 'USGS'
          AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
        RETURNING provider`,
@@ -79,7 +79,7 @@ export default async function handler(req, res) {
        SET backfill_from = COALESCE(backfill_from, $1),
            backfill_to = COALESCE(backfill_to, $2),
            backfill_completed_through = COALESCE(backfill_completed_through, $1),
-           last_error = NULL, updated_at = NOW()
+           backfill_last_error = NULL, updated_at = NOW()
        WHERE provider = 'USGS' AND lease_owner = $3`,
       [BACKFILL_START, now.toISOString(), leaseOwner]
     );
@@ -101,7 +101,7 @@ export default async function handler(req, res) {
     if (batchStart >= backfillEnd) {
       await query(
         `UPDATE source_sync_state
-         SET status = 'healthy', last_success_at = NOW(), updated_at = NOW()
+         SET backfill_status = 'healthy', backfill_last_success_at = NOW(), updated_at = NOW()
          WHERE provider = 'USGS' AND lease_owner = $1`,
         [leaseOwner]
       );
@@ -131,9 +131,9 @@ export default async function handler(req, res) {
     await query(
       `UPDATE source_sync_state
        SET backfill_completed_through = $1,
-           last_success_at = NOW(),
-           status = $2,
-           last_error = NULL,
+           backfill_last_success_at = NOW(),
+           backfill_status = $2,
+           backfill_last_error = NULL,
            updated_at = NOW()
        WHERE provider = 'USGS' AND lease_owner = $3`,
       [batchEnd.toISOString(), done ? 'healthy' : 'running', leaseOwner]
@@ -155,7 +155,7 @@ export default async function handler(req, res) {
     try {
       await query(
         `UPDATE source_sync_state
-         SET status = 'failed', last_error = $1, last_attempt_at = NOW(), updated_at = NOW()
+         SET backfill_status = 'failed', backfill_last_error = $1, backfill_last_attempt_at = NOW(), updated_at = NOW()
          WHERE provider = 'USGS' AND lease_owner = $2`,
         [error.message, leaseOwner]
       );
