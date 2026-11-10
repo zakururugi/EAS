@@ -1,9 +1,10 @@
 <template>
   <div class="timeline-container" v-if="event">
     <div class="timeline-header">
-      <h3>📊 Shaking Timeline</h3>
+      <h3>Shaking Timeline · model estimate</h3>
       <button class="close-btn" @click="$emit('close')">✕</button>
     </div>
+    <p class="timeline-disclaimer">Illustrative model only — not observed shaking, an official ShakeMap, or a safety assessment.</p>
     <div class="timeline-chart-wrapper">
       <canvas ref="chartCanvas"></canvas>
     </div>
@@ -11,7 +12,7 @@
       <span class="legend-p"><span class="dot dot-p"></span>P‑wave arrival</span>
       <span class="legend-s"><span class="dot dot-s"></span>S‑wave arrival</span>
       <span class="legend-peak"><span class="dot dot-peak"></span>Peak shaking</span>
-      <span class="legend-safe"><span class="dot dot-safe"></span>Below damaging (MMI < 4)</span>
+      <span class="legend-safe"><span class="dot dot-safe"></span>MMI IV reference</span>
     </div>
     <div class="timeline-stats" v-if="timelineData">
       <div class="stat">
@@ -343,7 +344,7 @@ export default {
                   borderDash: [4, 4],
                   label: {
                     display: true,
-                    content: 'Damage threshold (MMI 4)',
+                    content: 'MMI IV reference',
                     position: 'end',
                     backgroundColor: 'rgba(100, 255, 218, 0.8)',
                     color: '#000',
@@ -384,7 +385,7 @@ export default {
             y: {
               title: {
                 display: true,
-                text: 'MMI Intensity',
+                text: 'Estimated MMI (model)',
                 color: '#8892b0',
                 font: { size: 11 },
               },
@@ -593,6 +594,7 @@ export default {
 .timeline-header h3 { color: #64ffda; margin: 0; font-size: 15px; font-weight: 600; }
 
 .timeline-chart-wrapper { width: 100%; height: 200px; position: relative; }
+.timeline-disclaimer { margin: 0 0 8px; padding: 8px 10px; border-left: 3px solid #b7791f; background: rgba(183, 121, 31, 0.10); color: #8a5a12; font-size: 11px; line-height: 1.45; }
 
 .close-btn {
   background: none; border: none; color: #8892b0; cursor: pointer;
