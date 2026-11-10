@@ -306,3 +306,11 @@ ALTER TABLE source_sync_state
 
 ALTER TABLE source_sync_state
     ADD COLUMN IF NOT EXISTS backfill_cursor TEXT;
+
+
+ALTER TABLE source_sync_state
+    ADD COLUMN IF NOT EXISTS backfill_status VARCHAR(20) NOT NULL DEFAULT 'never_run'
+      CHECK (backfill_status IN ('never_run', 'running', 'healthy', 'degraded', 'failed')),
+    ADD COLUMN IF NOT EXISTS backfill_last_attempt_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS backfill_last_success_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS backfill_last_error TEXT;
