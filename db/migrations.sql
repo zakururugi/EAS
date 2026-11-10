@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 INSERT INTO schema_migrations (version)
-VALUES ('20261110_eas_canonical_archive_v3')
+VALUES ('20261110_eas_canonical_archive_v4')
 ON CONFLICT (version) DO NOTHING;
 
 
@@ -328,3 +328,24 @@ CREATE TABLE IF NOT EXISTS event_source_revisions (
 
 CREATE INDEX IF NOT EXISTS idx_event_source_revisions_source_time
     ON event_source_revisions (event_source_id, retrieved_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS intensity_products (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_source_id UUID NOT NULL REFERENCES event_sources(id) ON DELETE CASCADE,
+    provider VARCHAR(16) NOT NULL CHECK (provider IN ('PHIVOLCS', 'USGS')),
+    product_type VARCHAR(24) NOT NULL CHECK (product_type IN ('SHAKEMAP', 'DYFI', 'PEIS', 'OTHER')),
+    product_code TEXT NOT NULL,
+    product_version TEXT NOT NULL DEFAULT '',
+    product_status TEXT,
+    preferred_weight INTEGER,
+    intensity_scale VARCHAR(16) CHECK (intensity_scale IN ('PEIS', 'MMI', 'UNKNOWN')),
+    source_url TEXT,
+    contents JSONB NOT NULL DEFAULT '{}'::jsonb,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (event_source_id, product_type, product_code, product_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_intensity_products_source_type
+    ON intensity_products (event_source_id, product_type, retrieved_at DESC);
