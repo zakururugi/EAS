@@ -7,6 +7,8 @@
  */
 
 import { fetchUsgsEventProducts } from '../_lib/sources/usgs.js';
+import { persistUsgsProducts } from '../_lib/intensity/persist-usgs-products.js';
+import { query } from '../_lib/db.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -32,10 +34,18 @@ export default async function handler(req, res) {
 
   try {
     const products = await fetchUsgsEventProducts(eventId);
+    let persistence = { storedProducts: 0, storedObservations: 0 };
+    if (process.env.DATABASE_URL) {
+      try {
+        persistence = await persistUsgsProducts(eventId, products, query);
+      } catch (error) {
+        console.error('[events/usgs-products] Product persistence skipped:', error.message);
+      }
+    }
     res.status(200).json({
       source: 'USGS',
       notificationEligible: false,
-      eventId,
+      persistence,
       ...products,
     });
   } catch (error) {
