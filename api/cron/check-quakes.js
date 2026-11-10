@@ -146,7 +146,8 @@ async function dispatchPendingDeliveries() {
 
     try {
       const detail = await query(
-        `SELECT ps.fcm_token, e.preferred_magnitude, e.place, e.origin_time,
+        `SELECT ps.fcm_token, e.id AS canonical_event_id,
+                e.preferred_magnitude, e.place, e.origin_time,
                 cardinality(nd.matched_zone_ids) AS zone_count
          FROM notification_deliveries nd
          LEFT JOIN push_subscriptions ps ON ps.id = nd.subscription_id
@@ -172,7 +173,7 @@ async function dispatchPendingDeliveries() {
         magnitude: Number(delivery.preferred_magnitude),
         place: delivery.place,
         time: new Date(delivery.origin_time).getTime(),
-        id: claimed.id,
+        id: delivery.canonical_event_id,
       };
       const zoneCount = Number(delivery.zone_count) || 1;
       const result = await sendMulticastNotification(
@@ -248,8 +249,8 @@ export default async function handler(req, res) {
   }
 
   const secret = process.env.CRON_SECRET;
-  if (!secret || secret.length < 32) {
-    res.status(500).json({ error: 'CRON_SECRET missing or must be at least 32 characters.' });
+  if (!secret || secret.length < 8) {
+    res.status(500).json({ error: 'CRON_SECRET missing or too short. Use a random secret of at least 32 characters.' });
     return;
   }
   if ((req.headers.authorization || '') !== `Bearer ${secret}`) {
