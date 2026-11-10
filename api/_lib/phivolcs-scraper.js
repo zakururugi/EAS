@@ -184,6 +184,97 @@ export function parsePhivolcsHtml(html, sourceUrl = PHIVOLCS_URLS[0]) {
   return [...uniqueEvents.values()].sort((a, b) => b.time - a.time);
 }
 
+const MONTH_NUMBERS = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+export function discoverPhivolcsArchiveMonths(html, baseUrl = PHIVOLCS_URLS[0]) {
+  const $ = cheerio.load(html);
+  const discovered = new Map();
+
+  $('a[href]').each((_, anchor) => {
+    const link = $(anchor);
+    const label = link.text().trim().toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
+    const month = MONTH_NUMBERS[label];
+    if (!month) return;
+
+    const href = link.attr('href');
+    if (!href || /^(?:javascript:|mailto:|#)/i.test(href)) return;
+
+    const context = `${link.closest('tr').text()} ${link.parent().parent().text()} ${href}`;
+    const yearMatch = context.match(/\\b(19|20)\\d{2}\\b/);
+    if (!yearMatch) return;
+
+    let url;
+    try {
+      url = new URL(href, baseUrl);
+    } catch {
+      return;
+    }
+    if (
+      url.protocol !== 'https:' ||
+      !url.hostname.toLowerCase().endsWith('phivolcs.dost.gov.ph')
+    ) return;
+
+    const year = Number(yearMatch[0]);
+    const key = `${year}-${String(month).padStart(2, '0')}`;
+    discovered.set(key, { year, month, key, url: url.toString() });
+  });
+
+  return [...discovered.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+export async function fetchPhivolcsArchiveMonths() {
+  const failures = [];
+  const all = new Map();
+
+  for (const sourceUrl of PHIVOLCS_URLS) {
+    try {
+      const { data: html } = await axios.get(sourceUrl, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      });
+      for (const archive of discoverPhivolcsArchiveMonths(html, sourceUrl)) {
+        all.set(archive.key, archive);
+      }
+    } catch (error) {
+      failures.push(`${sourceUrl}: ${error.message}`);
+    }
+  }
+
+  if (all.size === 0 && failures.length > 0) {
+    throw new Error(`Unable to discover PHIVOLCS archive months: ${failures.join(' | ')}`);
+  }
+  return [...all.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+export async function fetchPhivolcsArchiveMonth(year, month) {
+  if (!Number.isInteger(year) || year < 1900 || year > new Date().getUTCFullYear()) {
+    throw new TypeError('Invalid PHIVOLCS archive year.');
+  }
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    throw new TypeError('Invalid PHIVOLCS archive month.');
+  }
+
+  const key = `${year}-${String(month).padStart(2, '0')}`;
+  const archives = await fetchPhivolcsArchiveMonths();
+  const archive = archives.find((item) => item.key === key);
+  if (!archive) throw new Error(`PHIVOLCS archive month ${key} is not currently linked by the official archive index.`);
+
+  const { data: html } = await axios.get(archive.url, {
+    timeout: 20000,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
+      Accept: 'text/html,application/xhtml+xml',
+    },
+  });
+  return parsePhivolcsHtml(html, archive.url);
+}
+
 export async function scrapePhivolcsEvents() {
   const failures = [];
   let recognizedEmptyFeed = false;
