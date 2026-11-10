@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   parseDepth,
   parsePhivolcsDatetime,
+  parsePhivolcsEventRow,
+  parsePhivolcsHtml,
+  discoverPhivolcsArchiveMonths,
 } from '../api/_lib/phivolcs-scraper.js';
 
 test('parses PHIVOLCS morning time as Philippine local time', () => {
@@ -41,4 +44,60 @@ test('rejects missing, invalid, and negative depth values', () => {
   assert.ok(Number.isNaN(parseDepth('')));
   assert.ok(Number.isNaN(parseDepth('unknown')));
   assert.ok(Number.isNaN(parseDepth('-4 km')));
+});
+
+
+test('parses PHIVOLCS rows from a table regardless of CSS class or table index', () => {
+  const html = `
+    <table><tr><td>Navigation</td></tr></table>
+    <table>
+      <tr><td>Date - Time</td><td>Latitude</td><td>Longitude</td><td>Depth</td><td>Magnitude</td><td>Location</td></tr>
+      <tr><td>13 June 2026 - 02:32 AM</td><td>14.5</td><td>121.0</td><td>008 km</td><td>4.8</td><td>Batangas</td></tr>
+    </table>`;
+  const events = parsePhivolcsHtml(html);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].place, 'Batangas');
+  assert.equal(events[0].source, 'PHIVOLCS');
+  assert.equal(events[0].latitude, 14.5);
+});
+
+test('recognizes a valid empty earthquake table but rejects a malformed data table', () => {
+  const emptyHtml = `
+    <table>
+      <tr><th>Date - Time</th><th>Latitude</th><th>Longitude</th><th>Depth</th><th>Magnitude</th><th>Location</th></tr>
+    </table>`;
+  assert.deepEqual(parsePhivolcsHtml(emptyHtml), []);
+
+  const malformedHtml = `
+    <table>
+      <tr><td>Date - Time</td><td>Latitude</td><td>Longitude</td><td>Depth</td><td>Magnitude</td><td>Location</td></tr>
+      <tr><td>broken row</td><td>x</td><td>x</td><td>x</td><td>x</td><td>Unknown</td></tr>
+    </table>`;
+  assert.throws(() => parsePhivolcsHtml(malformedHtml), /no valid earthquake rows/);
+});
+
+test('rejects PHIVOLCS rows with missing or out-of-range fields', () => {
+  assert.equal(parsePhivolcsEventRow(['13 June 2026 - 02:32 AM', '999', '121', '8', '4.8', 'Place']), null);
+  assert.equal(parsePhivolcsEventRow(['13 June 2026 - 02:32 AM', '14', '121', '8', '4.8', '']), null);
+  assert.equal(parsePhivolcsEventRow(['bad date', '14', '121', '8', '4.8', 'Place']), null);
+});
+
+
+test('discovers official PHIVOLCS monthly archive links by year and month', () => {
+  const html = `
+    <table>
+      <tr>
+        <td>2026</td>
+        <td><a href="/archive/2026/01.html">Jan</a></td>
+        <td><a href="/archive/2026/02.html">February</a></td>
+      </tr>
+      <tr>
+        <td>2025</td>
+        <td><a href="/archive/2025/12.html">December</a></td>
+      </tr>
+      <tr><td><a href="https://example.com/2026/03.html">March</a></td></tr>
+    </table>`;
+  const archives = discoverPhivolcsArchiveMonths(html, 'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html');
+  assert.deepEqual(archives.map((item) => item.key), ['2025-12', '2026-01', '2026-02']);
+  assert.ok(archives.every((item) => item.url.startsWith('https://tsunami.phivolcs.dost.gov.ph/')));
 });
