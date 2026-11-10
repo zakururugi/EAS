@@ -126,7 +126,7 @@ function looksLikeEarthquakeHeader($, table) {
   return groups.filter((pattern) => pattern.test(text)).length >= 4;
 }
 
-function readTableRows($, table) {
+function readTableRows($, table, sourceUrl) {
   return $(table).find('tr').toArray().map((row) => {
     const cells = $(row).find('td').toArray();
     if (cells.length < 6) return { isDataRow: false, event: null };
@@ -160,7 +160,7 @@ export function parsePhivolcsHtml(html, sourceUrl = PHIVOLCS_URLS[0]) {
   let malformedDataTable = false;
 
   for (const table of tables) {
-    const rows = readTableRows($, table);
+    const rows = readTableRows($, table, sourceUrl);
     const validRows = rows.map((row) => row.event).filter(Boolean);
     const dataRowCount = rows.filter((row) => row.isDataRow).length;
     const recognizedHeader = looksLikeEarthquakeHeader($, table);
