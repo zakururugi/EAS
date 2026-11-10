@@ -80,7 +80,7 @@ export function parseDepth(depthStr) {
 export function parsePhivolcsCoordinate(value, positiveHemisphere, negativeHemisphere) {
   if (typeof value !== 'string' && typeof value !== 'number') return NaN;
   const text = String(value).trim().replace(/,/g, '');
-  const match = text.match(/^([+-]?\\d+(?:\\.\\d+)?)\\s*°?\\s*([NSEW])?$/i);
+  const match = text.match(/^([+-]?\d+(?:\.\d+)?)\\s*°?\\s*([NSEW])?$/i);
   if (!match) return NaN;
   let coordinate = Number(match[1]);
   const hemisphere = (match[2] || '').toUpperCase();
