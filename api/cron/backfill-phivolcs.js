@@ -76,7 +76,7 @@ export default async function handler(req, res) {
       [leaseOwner]
     );
     const cursor = stateResult.rows[0]?.backfill_cursor || '';
-    const partial = cursor.match(/^(\\d{4}-\\d{2}):(\\d+)$/);
+    const partial = cursor.match(/^(\d{4}-\d{2}):(\d+)$/);
     const activeArchiveKey = partial?.[1] || null;
     const offset = partial ? Number(partial[2]) : 0;
     const nextArchive = activeArchiveKey
