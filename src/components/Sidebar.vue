@@ -33,6 +33,7 @@
 
     <!-- Event list -->
     <div class="events-list" ref="listContainer">
+      <div v-if="historyMode" class="history-status">Historical archive results</div>
       <!-- Skeleton loader -->
       <template v-if="loading">
         <div v-for="n in 6" :key="'skeleton-' + n" class="event-card skeleton-card">
@@ -60,7 +61,8 @@
             <div class="event-meta">
               <span class="event-time">{{ formatTime(event.time) }}</span>
               <span class="event-depth">{{ event.depth?.toFixed(1) || '?' }} km</span>
-              <span v-if="event.source" class="event-source">{{ event.source }}</span>
+              <span v-if="event.source === 'USGS'" class="event-source supplemental-source">USGS · supplemental</span>
+              <span v-else-if="event.source === 'PHIVOLCS'" class="event-source">PHIVOLCS</span>
               <span v-if="event.felt" class="event-felt">👤 {{ event.felt }}</span>
               <span v-if="event.mmi" class="event-mmi">MMI {{ event.mmi }}</span>
               <span v-if="event.tsunami" class="event-tsunami">🌊</span>
@@ -403,5 +405,38 @@ export default {
   border-radius: 3px;
   font-size: 10px;
   font-weight: 600;
+}
+
+.history-status {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(100, 255, 218, 0.2);
+  border-radius: 6px;
+  color: #64ffda;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.supplemental-source {
+  color: #9aa7bd;
+  border: 1px solid rgba(154, 167, 189, 0.35);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.load-more-history {
+  width: calc(100% - 16px);
+  margin: 10px 8px 18px;
+  padding: 10px 12px;
+  border: 1px solid #64ffda;
+  border-radius: 6px;
+  background: rgba(100, 255, 218, 0.08);
+  color: #64ffda;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.load-more-history:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 </style>
