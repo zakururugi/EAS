@@ -287,13 +287,8 @@ export default {
         }
 
         const allEvents = data.events;
-        // A sudden empty live catalogue is suspicious; an empty date-filtered
-        // archive result is legitimate and should clear the filtered view.
-        if (!historyMode && allEvents.length === 0 && events.value.length > 0) {
-          error.value = 'PHIVOLCS returned an empty feed. Keeping the last successfully loaded earthquake data.';
-          return;
-        }
-
+        // The PHIVOLCS parser now fails explicitly on unrecognized or malformed
+        // pages, so a successful empty response is a valid filtered result.
         hasPHIVOLCS.value = allEvents.some((e) => e.source === 'PHIVOLCS');
         events.value = allEvents;
         lastUpdated.value = Date.now();
