@@ -253,17 +253,33 @@ export default {
     // Methods
     // ============================================================
 
+    function isHistoryMode() {
+      return Boolean(dateFrom.value || dateTo.value);
+    }
+
     async function loadEvents() {
       const requestId = ++eventRequestSequence;
+      const historyMode = isHistoryMode();
+      historyCursor.value = null;
+      historyHasMore.value = false;
+      historyLoadingMore.value = false;
+
       try {
         loading.value = true;
         sidebarLoading.value = true;
         error.value = null;
 
-        const data = await api.fetchLatestEvents({
-          minMagnitude: minMagnitude.value,
-          limit: 100,
-        });
+        const data = historyMode
+          ? await api.fetchEventHistory({
+              from: dateFrom.value,
+              to: dateTo.value,
+              minMagnitude: minMagnitude.value,
+              limit: 500,
+            })
+          : await api.fetchLatestEvents({
+              minMagnitude: minMagnitude.value,
+              limit: 100,
+            });
 
         if (requestId !== eventRequestSequence) return;
         if (!data || !Array.isArray(data.events) || data.metadata?.status === 'unavailable') {
@@ -271,9 +287,9 @@ export default {
         }
 
         const allEvents = data.events;
-        // A sudden empty catalogue after previously loaded events is treated as
-        // suspicious. Keep last-known-good data until a non-empty feed arrives.
-        if (allEvents.length === 0 && events.value.length > 0) {
+        // A sudden empty live catalogue is suspicious; an empty date-filtered
+        // archive result is legitimate and should clear the filtered view.
+        if (!historyMode && allEvents.length === 0 && events.value.length > 0) {
           error.value = 'PHIVOLCS returned an empty feed. Keeping the last successfully loaded earthquake data.';
           return;
         }
@@ -283,11 +299,16 @@ export default {
         lastUpdated.value = Date.now();
         isOffline.value = false;
 
+        if (historyMode) {
+          historyCursor.value = data.metadata?.nextCursor || null;
+          historyHasMore.value = data.metadata?.hasMore === true;
+        }
+
         if (allEvents.length > 0) {
           await cacheEvents(allEvents);
         }
 
-        console.log(`[App] Loaded ${allEvents.length} events`);
+        console.log(`[App] Loaded ${allEvents.length} ${historyMode ? 'historical' : 'latest'} events`);
       } catch (err) {
         if (requestId !== eventRequestSequence) return;
         console.error('[App] Failed to load events:', err.message);
@@ -309,6 +330,49 @@ export default {
         if (requestId === eventRequestSequence) {
           loading.value = false;
           sidebarLoading.value = false;
+        }
+      }
+    }
+
+    async function loadMoreHistory() {
+      if (!isHistoryMode() || !historyHasMore.value || !historyCursor.value || historyLoadingMore.value) {
+        return;
+      }
+
+      const requestId = ++eventRequestSequence;
+      historyLoadingMore.value = true;
+      error.value = null;
+
+      try {
+        const data = await api.fetchEventHistory({
+          from: dateFrom.value,
+          to: dateTo.value,
+          minMagnitude: minMagnitude.value,
+          limit: 500,
+          cursor: historyCursor.value,
+        });
+
+        if (requestId !== eventRequestSequence) return;
+        if (!data || !Array.isArray(data.events) || data.metadata?.status === 'unavailable') {
+          throw new Error('The earthquake history service returned an invalid response.');
+        }
+
+        const existingIds = new Set(events.value.map((event) => event.id));
+        const additionalEvents = data.events.filter((event) => !existingIds.has(event.id));
+        events.value = [...events.value, ...additionalEvents];
+        historyCursor.value = data.metadata?.nextCursor || null;
+        historyHasMore.value = data.metadata?.hasMore === true;
+
+        if (additionalEvents.length > 0) {
+          await cacheEvents(events.value);
+        }
+      } catch (err) {
+        if (requestId === eventRequestSequence) {
+          error.value = err.message;
+        }
+      } finally {
+        if (requestId === eventRequestSequence) {
+          historyLoadingMore.value = false;
         }
       }
     }
