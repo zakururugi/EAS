@@ -222,6 +222,8 @@ export default {
 
     // Geolocation watch ID
     let geoWatchId = null;
+    // Prevent an older poll response from overwriting a newer result.
+    let eventRequestSequence = 0;
 
     // ============================================================
     // Hash-based routing for shareable links
@@ -252,6 +254,7 @@ export default {
     // ============================================================
 
     async function loadEvents() {
+      const requestId = ++eventRequestSequence;
       try {
         loading.value = true;
         sidebarLoading.value = true;
@@ -262,31 +265,51 @@ export default {
           limit: 100,
         });
 
-        const allEvents = data.events || [];
+        if (requestId !== eventRequestSequence) return;
+        if (!data || !Array.isArray(data.events) || data.metadata?.status === 'unavailable') {
+          throw new Error('The earthquake service returned an invalid or unavailable feed.');
+        }
+
+        const allEvents = data.events;
+        // A sudden empty catalogue after previously loaded events is treated as
+        // suspicious. Keep last-known-good data until a non-empty feed arrives.
+        if (allEvents.length === 0 && events.value.length > 0) {
+          error.value = 'PHIVOLCS returned an empty feed. Keeping the last successfully loaded earthquake data.';
+          return;
+        }
 
         hasPHIVOLCS.value = allEvents.some((e) => e.source === 'PHIVOLCS');
-
         events.value = allEvents;
         lastUpdated.value = Date.now();
+        isOffline.value = false;
 
-        cacheEvents(allEvents);
+        if (allEvents.length > 0) {
+          await cacheEvents(allEvents);
+        }
 
         console.log(`[App] Loaded ${allEvents.length} events`);
       } catch (err) {
+        if (requestId !== eventRequestSequence) return;
         console.error('[App] Failed to load events:', err.message);
         error.value = err.message;
 
-        if (!navigator.onLine) {
+        // Preserve the current in-memory catalogue on every failure. Only use
+        // IndexedDB when this session has no known-good events yet.
+        if (events.value.length === 0 && !navigator.onLine) {
           const cached = await loadCachedEvents();
+          if (requestId !== eventRequestSequence) return;
           if (cached.length > 0) {
             events.value = cached;
+            hasPHIVOLCS.value = cached.some((e) => e.source === 'PHIVOLCS');
             isOffline.value = true;
             error.value = null;
           }
         }
       } finally {
-        loading.value = false;
-        sidebarLoading.value = false;
+        if (requestId === eventRequestSequence) {
+          loading.value = false;
+          sidebarLoading.value = false;
+        }
       }
     }
 
