@@ -1,41 +1,50 @@
 /**
- * Database connection helper for Vercel serverless functions.
- * Uses @vercel/postgres for connection pooling.
- * Supports Neon URL format (postgresql:// → postgres:// conversion).
+ * PostgreSQL connection helper for Vercel serverless functions.
+ *
+ * Supabase is accessed through its PostgreSQL connection URI, not through
+ * Supabase publishable/secret API keys. Use the Supabase transaction-pooler
+ * URI for serverless deployments and keep SSL enabled.
  */
 
-import { createPool } from '@vercel/postgres';
+import postgres from 'postgres';
 
-let pool = null;
+let client = null;
+
+export function getDb() {
+  if (client) return client;
+
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL is not configured. Add the Supabase PostgreSQL connection URI.');
+  }
+
+  client = postgres(connectionString, {
+    ssl: 'require',
+    prepare: false,
+    max: 1,
+    connect_timeout: 10,
+    idle_timeout: 20,
+  });
+
+  return client;
+}
 
 /**
- * Normalize DATABASE_URL for Vercel Neon compatibility.
- * Neon uses postgresql:// but @vercel/postgres expects postgres://.
+ * Preserve the { rows, rowCount } shape expected by existing API handlers.
  */
-function normalizeConnectionString(url) {
-  if (!url) return url;
-  let normalized = url;
-  if (normalized.startsWith('postgresql://')) {
-    normalized = 'postgres://' + normalized.slice('postgresql://'.length);
+export async function query(statement, parameters = []) {
+  if (typeof statement !== 'string' || !statement.trim()) {
+    throw new TypeError('SQL statement must be a non-empty string.');
   }
-  if (!normalized.includes('-pooler')) {
-    console.warn('[DB] WARNING: DATABASE_URL does not contain "-pooler". Use Neon pooled URL.');
+  if (!Array.isArray(parameters)) {
+    throw new TypeError('SQL parameters must be an array.');
   }
-  return normalized;
-}
 
-export async function getDb() {
-  if (!pool) {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) throw new Error('DATABASE_URL not set');
-    pool = createPool({ connectionString: normalizeConnectionString(connectionString) });
-  }
-  return pool;
-}
-
-export async function query(text, params = []) {
-  const db = await getDb();
-  return await db.query(text, params);
+  const result = await getDb().unsafe(statement, parameters);
+  return {
+    rows: result,
+    rowCount: Number.isInteger(result.count) ? result.count : result.length,
+  };
 }
 
 export default { getDb, query };
