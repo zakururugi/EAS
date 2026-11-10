@@ -6,17 +6,7 @@
  */
 
 import { fetchPhivolcsEvents } from '../_lib/phivolcs-scraper.js';
-
-function parseBoundedNumber(value, fallback, min, max, name) {
-  if (value === undefined || value === null || value === '') return fallback;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
-    const error = new Error(`Invalid ${name}; expected a value from ${min} to ${max}.`);
-    error.statusCode = 400;
-    throw error;
-  }
-  return parsed;
-}
+import { parseBoundedNumber, prepareLatestEvents } from '../_lib/latest-feed.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -50,23 +40,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const events = await fetchPhivolcsEvents();
-    if (!Array.isArray(events)) {
-      throw new Error('PHIVOLCS adapter returned a non-array event payload.');
-    }
-
-    const filtered = events
-      .filter((event) => (
-        event &&
-        Number.isFinite(Number(event.time)) &&
-        Number.isFinite(Number(event.magnitude)) &&
-        Number.isFinite(Number(event.latitude)) &&
-        Number.isFinite(Number(event.longitude)) &&
-        Number.isFinite(Number(event.depth)) &&
-        Number(event.magnitude) >= minMagnitude
-      ))
-      .sort((a, b) => Number(b.time) - Number(a.time))
-      .slice(0, limit);
+    const sourceEvents = await fetchPhivolcsEvents();
+    const filtered = prepareLatestEvents(sourceEvents, { minMagnitude, limit });
 
     res.status(200).json({
       type: 'FeatureCollection',
