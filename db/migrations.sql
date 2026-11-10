@@ -366,3 +366,37 @@ ALTER TABLE intensity_observations
 CREATE UNIQUE INDEX IF NOT EXISTS idx_intensity_observations_source_observation
     ON intensity_observations (earthquake_event_id, provider, product_type, source_observation_id)
     WHERE source_observation_id IS NOT NULL;
+
+
+-- The application uses the private PostgreSQL connection from its server-side
+-- API. No browser code accesses these tables through the Supabase Data API.
+-- Enable RLS as defense in depth and remove direct Data API grants.
+DO $$
+DECLARE
+    table_name TEXT;
+BEGIN
+    FOREACH table_name IN ARRAY ARRAY[
+        'users',
+        'push_subscriptions',
+        'watch_zones',
+        'cron_state',
+        'earthquake_events',
+        'event_sources',
+        'event_matches',
+        'event_revisions',
+        'intensity_observations',
+        'source_sync_state',
+        'notification_deliveries',
+        'schema_migrations',
+        'event_source_revisions',
+        'intensity_products'
+    ]
+    LOOP
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', table_name);
+        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM anon, authenticated, service_role', table_name);
+    END LOOP;
+END
+$$;
+
+REVOKE ALL ON FUNCTION public.create_user_if_not_exists(VARCHAR) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public.find_subscriptions_for_epicenter(DOUBLE PRECISION, DOUBLE PRECISION, REAL) FROM PUBLIC, anon, authenticated, service_role;
