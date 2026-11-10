@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchUsgsEvents, normalizeUsgsFeature } from '../api/_lib/sources/usgs.js';
 import { haversineKm, scoreShadowMatch } from '../api/_lib/events/matching.js';
+import { extractUsgsProducts } from '../api/_lib/sources/usgs.js';
+import { persistUsgsProducts } from '../api/_lib/intensity/persist-usgs-products.js';
 
 test('normalizes a USGS GeoJSON feature without changing its source values', () => {
   const event = normalizeUsgsFeature({
@@ -79,4 +81,73 @@ test('calculates geographic distance and leaves candidate matches in shadow scor
     { time: Date.UTC(2026, 0, 1), latitude: 12, longitude: 124, magnitude: 5, depth: 20 },
     { origin_time: new Date(Date.UTC(2026, 0, 1) + 3600_000), latitude: 12, longitude: 124 }
   ), null);
+});
+
+
+test('extracts preferred official ShakeMap and DYFI product URLs only from USGS host', () => {
+  const products = extractUsgsProducts({
+    products: {
+      shakemap: [{
+        code: 'shakemap-1',
+        preferredWeight: 1,
+        status: 'UPDATE',
+        updateTime: 123,
+        contents: {
+          'download/cont_mi.json': { url: 'https://earthquake.usgs.gov/product/shakemap/test/cont_mi.json' },
+          'download/private.json': { url: 'https://example.com/private.json' },
+        },
+      }],
+      dyfi: [{
+        code: 'dyfi-1',
+        contents: {
+          'download/dyfi_geo.geojson': { url: 'https://earthquake.usgs.gov/product/dyfi/test/dyfi_geo.geojson' },
+        },
+      }],
+    },
+  });
+
+  assert.equal(products.shakemap.contourUrl, 'https://earthquake.usgs.gov/product/shakemap/test/cont_mi.json');
+  assert.equal(products.dyfi.geoJsonUrl, 'https://earthquake.usgs.gov/product/dyfi/test/dyfi_geo.geojson');
+  assert.equal(Object.keys(products.shakemap.files).length, 1);
+});
+
+test('persists USGS product metadata and DYFI reports as reported MMI observations', async () => {
+  const calls = [];
+  const fakeQuery = async (sql, params) => {
+    calls.push({ sql, params });
+    if (sql.includes('SELECT id, earthquake_event_id')) {
+      return { rows: [{ id: 'source-1', earthquake_event_id: 'event-1' }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 1 };
+  };
+
+  const result = await persistUsgsProducts('us7000test', {
+    shakemap: {
+      code: 'sm-1', updateTime: 100, status: 'UPDATE',
+      contourUrl: 'https://earthquake.usgs.gov/cont_mi.json',
+      files: { 'download/cont_mi.json': 'https://earthquake.usgs.gov/cont_mi.json' },
+      rawProperties: {},
+    },
+    dyfi: {
+      code: 'dyfi-1', updateTime: 101,
+      geoJsonUrl: 'https://earthquake.usgs.gov/dyfi_geo.geojson',
+      files: {},
+      geojson: {
+        type: 'FeatureCollection',
+        features: [{
+          id: 'report-1',
+          properties: { name: 'Town A', cdi: 4.2, nresp: 12, dist: 30 },
+          geometry: { type: 'Point', coordinates: [124.2, 12.4] },
+        }],
+      },
+    },
+  }, fakeQuery);
+
+  assert.equal(result.storedProducts, 2);
+  assert.equal(result.storedObservations, 1);
+  assert.ok(calls.some((call) => call.sql.includes('INSERT INTO intensity_products')));
+  assert.ok(calls.some((call) => call.sql.includes('INSERT INTO intensity_observations')));
+  const observation = calls.find((call) => call.sql.includes('INSERT INTO intensity_observations'));
+  assert.equal(observation.params[2], 'Town A');
+  assert.equal(observation.params[6], 'report-1');
 });
