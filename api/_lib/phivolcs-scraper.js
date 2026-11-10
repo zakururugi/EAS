@@ -1,86 +1,94 @@
 /**
  * PHIVOLCS Earthquake Scraper
  *
- * Scrapes earthquake data from the PHIVOLCS website HTML table
- * and returns events in a format compatible with USGS event objects.
- *
- * Actual PHIVOLCS table columns (from saved HTML):
- *   Date-Time | Latitude (ºN) | Longitude (ºE) | Depth (km) | Mag | Location
- *
- * This replaces the old RSS feed approach (which no longer exists).
+ * Converts the official PHIVOLCS earthquake table into normalized events.
+ * PHIVOLCS publishes local Philippine time (UTC+08:00) without an offset.
  */
 
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import https from 'https';
 
 const PHIVOLCS_URL = 'https://earthquake.phivolcs.dost.gov.ph/';
+const PHILIPPINE_OFFSET_MS = 8 * 60 * 60 * 1000;
 
-// PHIVOLCS SSL certificate is self-signed; this agent skips verification.
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+const MONTHS = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
 
 /**
- * Parse a PHIVOLCS datetime string like "13 June 2026 - 02:32 AM"
- * into a Unix timestamp (milliseconds).
+ * Parse PHIVOLCS local datetime text into a UTC Unix timestamp.
+ * Invalid or missing timestamps return NaN; they are never replaced with now.
  */
-function parsePhivolcsDatetime(datetimeStr) {
-  if (!datetimeStr) return Date.now();
-  // Normalize: remove extra whitespace
+export function parsePhivolcsDatetime(datetimeStr) {
+  if (typeof datetimeStr !== 'string' || !datetimeStr.trim()) return NaN;
+
   const cleaned = datetimeStr.replace(/\s+/g, ' ').trim();
-  // Try format: "13 June 2026 - 02:32 AM" or "13 June 2026 02:32 AM"
   const match = cleaned.match(
-    /(\d{1,2})\s+(\w+)\s+(\d{4})\s*[-–]?\s*(\d{1,2}):(\d{2})\s*(AM|PM)/i
+    /(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s*[-–]?\s*(\d{1,2}):(\d{2})\s*(AM|PM)/i
   );
+
   if (match) {
-    const [, day, month, year, hour, minute, ampm] = match;
-    let h = parseInt(hour, 10);
-    if (ampm.toUpperCase() === 'PM' && h !== 12) h += 12;
-    if (ampm.toUpperCase() === 'AM' && h === 12) h = 0;
-    const months = {
-      jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-      jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
-    };
-    const m = months[month.toLowerCase().substring(0, 3)];
-    if (m !== undefined) {
-      return new Date(parseInt(year, 10), m, parseInt(day, 10), h, parseInt(minute, 10)).getTime();
+    const [, dayText, monthText, yearText, hourText, minuteText, ampm] = match;
+    const month = MONTHS[monthText.toLowerCase().slice(0, 3)];
+    const day = Number(dayText);
+    const year = Number(yearText);
+    let hour = Number(hourText);
+    const minute = Number(minuteText);
+
+    if (month === undefined || day < 1 || day > 31 || hour < 1 || hour > 12 || minute > 59) {
+      return NaN;
     }
+
+    if (ampm.toUpperCase() === 'PM' && hour !== 12) hour += 12;
+    if (ampm.toUpperCase() === 'AM' && hour === 12) hour = 0;
+
+    const localAsUtc = Date.UTC(year, month, day, hour, minute);
+    const check = new Date(localAsUtc);
+    if (
+      check.getUTCFullYear() !== year ||
+      check.getUTCMonth() !== month ||
+      check.getUTCDate() !== day ||
+      check.getUTCHours() !== hour ||
+      check.getUTCMinutes() !== minute
+    ) {
+      return NaN;
+    }
+
+    return localAsUtc - PHILIPPINE_OFFSET_MS;
   }
-  // Fallback: try parsing as ISO-like
-  const d = new Date(datetimeStr);
-  return isNaN(d.getTime()) ? Date.now() : d.getTime();
+
+  // Accept machine-readable timestamps only when they carry an explicit zone.
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(cleaned);
+  if (!hasTimezone) return NaN;
+  const parsed = Date.parse(cleaned);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+/** Parse a depth such as "008" or "015 km". */
+export function parseDepth(depthStr) {
+  if (typeof depthStr !== 'string' || !depthStr.trim()) return NaN;
+  const match = depthStr.match(/[-+]?\d+(?:\.\d+)?/);
+  if (!match) return NaN;
+  const depth = Number(match[0]);
+  return Number.isFinite(depth) && depth >= 0 ? depth : NaN;
 }
 
 /**
- * Parse depth string like "008" or "015 km" to a number (km).
- */
-function parseDepth(depthStr) {
-  if (!depthStr) return 0;
-  const m = depthStr.match(/([\d.]+)/);
-  return m ? parseFloat(m[1]) : 0;
-}
-
-/**
- * Scrape earthquake events from the PHIVOLCS website.
- *
- * The page has multiple <table class="MsoNormalTable">:
- *   [0] = header banner
- *   [1] = month label ("JUNE 2026")
- *   [2+] = actual earthquake data tables
- *
- * @returns {Promise<Array>} Array of event objects (same shape as USGS simplifyEvent).
+ * Scrape earthquake events from the official PHIVOLCS website.
+ * The HTML structure is checked explicitly so a changed page cannot silently
+ * masquerade as a successful empty feed.
  */
 export async function scrapePhivolcsEvents() {
   const { data: html } = await axios.get(PHIVOLCS_URL, {
-    httpsAgent,
     timeout: 15000,
     headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
+      Accept: 'text/html,application/xhtml+xml',
     },
   });
 
   const $ = cheerio.load(html);
-
-  // Select all MsoNormalTable tables, skip the first 2 (header & month label)
   const tables = $('table.MsoNormalTable');
   if (tables.length < 3) {
     throw new Error('PHIVOLCS earthquake table not found. Site structure may have changed.');
@@ -88,52 +96,47 @@ export async function scrapePhivolcsEvents() {
 
   const events = [];
 
-  // The data tables start at index 2+
   for (let t = 2; t < tables.length; t++) {
-    const table = $(tables[t]);
-
-    // Skip header rows (<th>) and only process data rows (<tr> with <td>)
-    table.find('tr').each((i, row) => {
+    $(tables[t]).find('tr').each((i, row) => {
       const cells = $(row).find('td');
       if (cells.length < 6) return;
 
-      // Column mapping (from saved HTML analysis):
-      //   0 = Date-Time    (inside <a><span class="auto-style99">...</span></a>)
-      //   1 = Latitude     (ºN)
-      //   2 = Longitude    (ºE)
-      //   3 = Depth        (km)
-      //   4 = Magnitude    (Mag)
-      //   5 = Location
       const datetime = $(cells[0]).text().trim();
       const latStr = $(cells[1]).text().trim();
       const lonStr = $(cells[2]).text().trim();
       const depthStr = $(cells[3]).text().trim();
       const magStr = $(cells[4]).text().trim();
-      const location = $(cells[5]).text().trim();
+      const place = $(cells[5]).text().trim();
 
-      const magnitude = parseFloat(magStr);
-      if (isNaN(magnitude) || magnitude <= 0) return;
-
+      const magnitude = Number.parseFloat(magStr);
+      const latitude = Number.parseFloat(latStr);
+      const longitude = Number.parseFloat(lonStr);
       const depth = parseDepth(depthStr);
       const time = parsePhivolcsDatetime(datetime);
 
-      const latNum = parseFloat(latStr);
-      const lonNum = parseFloat(lonStr);
-      const lat = isNaN(latNum) ? null : latNum;
-      const lon = isNaN(lonNum) ? null : lonNum;
+      if (
+        !Number.isFinite(magnitude) || magnitude <= 0 || magnitude > 10 ||
+        !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
+        !Number.isFinite(depth) || !Number.isFinite(time) || !place
+      ) {
+        return;
+      }
 
-      const id = `ph-${time}-${magnitude}`;
+      // Include coordinates in the deterministic ID to avoid collisions when
+      // two events share a timestamp and magnitude.
+      const id = `ph-${time}-${magnitude}-${latitude}-${longitude}`;
 
       events.push({
         id,
         eventId: id,
         magnitude,
-        place: location,
+        place,
         time,
         updated: time,
         depth,
-        latitude: lat,
-        longitude: lon,
+        latitude,
+        longitude,
         url: PHIVOLCS_URL,
         felt: 0,
         mmi: null,
@@ -146,18 +149,11 @@ export async function scrapePhivolcsEvents() {
 }
 
 /**
- * Convenience: scrape and return PHIVOLCS events.
- * Returns empty array on failure (errors are logged).
- *
- * @returns {Promise<Array>}
+ * Fetch events. Errors are allowed to propagate to callers so API routes and
+ * cron jobs can distinguish a failed scrape from a genuinely empty feed.
  */
 export async function fetchPhivolcsEvents() {
-  try {
-    const events = await scrapePhivolcsEvents();
-    console.log(`[phivolcs-scraper] Scraped ${events.length} events`);
-    return events;
-  } catch (err) {
-    console.error('[phivolcs-scraper] Error:', err.message);
-    return [];
-  }
+  const events = await scrapePhivolcsEvents();
+  console.log(`[phivolcs-scraper] Scraped ${events.length} events`);
+  return events;
 }

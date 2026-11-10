@@ -7,9 +7,6 @@ import admin from 'firebase-admin';
 
 let app = null;
 
-/**
- * Initialize Firebase Admin SDK (singleton pattern for serverless).
- */
 function getApp() {
   if (app) return app;
 
@@ -27,7 +24,6 @@ function getApp() {
     credential: admin.credential.cert({
       projectId,
       clientEmail,
-      // Handle escaped newlines in environment variable
       privateKey: privateKey.replace(/\\n/g, '\n'),
     }),
   });
@@ -35,21 +31,15 @@ function getApp() {
   return app;
 }
 
-/**
- * Send push notification to multiple devices (FCM multicast).
- *
- * @param {string[]} tokens - Array of FCM registration tokens
- * @param {Object} data - Notification payload
- * @param {string} data.title - Notification title
- * @param {string} data.body - Notification body
- * @param {string} [data.icon] - Notification icon URL
- * @param {string} [data.click_action] - URL to open on click
- * @param {Object} [data.customData] - Additional data payload
- * @returns {Promise<Object>} - FCM send response
- */
-export async function sendMulticastNotification(tokens, { title, body, icon, click_action, ...customData }) {
-  const messaging = getApp().messaging();
+export async function sendMulticastNotification(
+  tokens,
+  { title, body, icon, click_action, ...customData }
+) {
+  if (!Array.isArray(tokens) || tokens.length === 0) {
+    return { successCount: 0, failureCount: 0, responses: [] };
+  }
 
+  const messaging = getApp().messaging();
   const message = {
     tokens,
     notification: {
@@ -63,10 +53,9 @@ export async function sendMulticastNotification(tokens, { title, body, icon, cli
       ...(icon && { icon }),
       ...(click_action && { click_action }),
       ...Object.fromEntries(
-        Object.entries(customData).map(([k, v]) => [k, String(v)])
+        Object.entries(customData).map(([key, value]) => [key, String(value ?? '')])
       ),
     },
-    // High priority for immediate delivery
     android: {
       priority: 'high',
       notification: {
@@ -85,16 +74,12 @@ export async function sendMulticastNotification(tokens, { title, body, icon, cli
       },
     },
     webpush: {
-      headers: {
-        Urgency: 'high',
-      },
+      headers: { Urgency: 'high' },
       notification: {
         vibrate: [200, 100, 200],
         requireInteraction: true,
       },
-      fcm_options: {
-        link: click_action || '/',
-      },
+      fcm_options: { link: click_action || '/' },
     },
   };
 
@@ -103,9 +88,9 @@ export async function sendMulticastNotification(tokens, { title, body, icon, cli
     return {
       successCount: response.successCount,
       failureCount: response.failureCount,
-      responses: response.responses.map((r) => ({
-        success: r.success,
-        error: r.error?.message || null,
+      responses: response.responses.map((result) => ({
+        success: result.success,
+        error: result.error?.message || null,
       })),
     };
   } catch (err) {
@@ -115,26 +100,28 @@ export async function sendMulticastNotification(tokens, { title, body, icon, cli
 }
 
 /**
- * Build notification payload for an earthquake event.
- *
- * @param {Object} event - USGS earthquake event properties
- * @param {string} zoneName - Name of the watch zone that triggered
- * @returns {Object} - Formatted notification payload
+ * Build a notification from either the normalized PHIVOLCS shape
+ * (magnitude) or a USGS-compatible shape (mag).
  */
 export function buildEarthquakeNotification(event, zoneName = 'your watch zone') {
-  const mag = event.mag?.toFixed(1) || '?';
-  const place = event.place || 'Unknown location';
-  const time = new Date(event.time).toLocaleString();
+  const rawMagnitude = event?.magnitude ?? event?.mag;
+  const magnitude = Number(rawMagnitude);
+  const magLabel = Number.isFinite(magnitude) ? magnitude.toFixed(1) : '?';
+  const place = event?.place || 'Unknown location';
+  const timestamp = Number(event?.time);
+  const time = Number.isFinite(timestamp) && timestamp > 0
+    ? new Date(timestamp).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })
+    : 'Time unavailable';
 
   return {
-    title: `🔴 M${mag} Earthquake!`,
+    title: `🔴 M${magLabel} Earthquake!`,
     body: `${place} — ${time}\nZone: ${zoneName}`,
     icon: '/icons/icon-192x192.png',
-    click_action: `/`,
-    event_id: event.id || event.code || '',
-    magnitude: String(event.mag || ''),
+    click_action: '/',
+    event_id: event?.id || event?.eventId || event?.code || '',
+    magnitude: Number.isFinite(magnitude) ? magnitude.toFixed(1) : '',
     place,
-    time: String(event.time || ''),
+    time: String(timestamp || ''),
     zone: zoneName,
   };
 }
