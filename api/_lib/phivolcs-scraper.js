@@ -10,7 +10,10 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
-const PHIVOLCS_URL = 'https://earthquake.phivolcs.dost.gov.ph/';
+const PHIVOLCS_URLS = [
+  'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html',
+  'https://diliman.phivolcs.dost.gov.ph/',
+];
 const PHILIPPINE_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 const MONTHS = {
@@ -72,7 +75,7 @@ export function parseDepth(depthStr) {
  * Parse one PHIVOLCS data row in the documented column order:
  * date/time, latitude, longitude, depth, magnitude, location.
  */
-export function parsePhivolcsEventRow(values) {
+export function parsePhivolcsEventRow(values, sourceUrl = PHIVOLCS_URLS[0]) {
   if (!Array.isArray(values) || values.length < 6) return null;
 
   const [datetime, latText, lonText, depthText, magnitudeText, placeText] =
@@ -103,7 +106,7 @@ export function parsePhivolcsEventRow(values) {
     depth,
     latitude,
     longitude,
-    url: PHIVOLCS_URL,
+    url: sourceUrl,
     felt: 0,
     mmi: null,
     source: 'PHIVOLCS',
@@ -137,11 +140,11 @@ function readTableRows($, table) {
       /depth/.test(headerText);
 
     if (isHeaderRow) return { isDataRow: false, event: null };
-    return { isDataRow: true, event: parsePhivolcsEventRow(values) };
+    return { isDataRow: true, event: parsePhivolcsEventRow(values, sourceUrl) };
   });
 }
 
-export function parsePhivolcsHtml(html) {
+export function parsePhivolcsHtml(html, sourceUrl = PHIVOLCS_URLS[0]) {
   if (typeof html !== 'string' || !html.trim()) {
     throw new Error('PHIVOLCS returned an empty HTML document.');
   }
@@ -182,15 +185,29 @@ export function parsePhivolcsHtml(html) {
 }
 
 export async function scrapePhivolcsEvents() {
-  const { data: html } = await axios.get(PHIVOLCS_URL, {
-    timeout: 15000,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
-      Accept: 'text/html,application/xhtml+xml',
-    },
-  });
+  const failures = [];
+  let recognizedEmptyFeed = false;
 
-  return parsePhivolcsHtml(html);
+  for (const sourceUrl of PHIVOLCS_URLS) {
+    try {
+      const { data: html } = await axios.get(sourceUrl, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      });
+
+      const events = parsePhivolcsHtml(html, sourceUrl);
+      if (events.length > 0) return events;
+      recognizedEmptyFeed = true;
+    } catch (error) {
+      failures.push(`${sourceUrl}: ${error.message}`);
+    }
+  }
+
+  if (recognizedEmptyFeed) return [];
+  throw new Error(`All official PHIVOLCS feed endpoints failed: ${failures.join(' | ')}`);
 }
 
 /**
