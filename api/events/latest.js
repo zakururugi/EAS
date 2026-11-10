@@ -1,72 +1,69 @@
 /**
  * GET /api/events/latest
  *
- * Returns earthquakes from PHIVOLCS (scraped from website).
- * USGS has been removed - PHIVOLCS is now the only source.
+ * PHIVOLCS is the authoritative source for Philippine push-alert eligibility.
+ * A provider/parser failure is never represented as a successful empty feed.
  */
 
 import { fetchPhivolcsEvents } from '../_lib/phivolcs-scraper.js';
+import { parseBoundedNumber, prepareLatestEvents } from '../_lib/latest-feed.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'no-store');
 
   if (req.method === 'OPTIONS') {
-    res.status(200).end();
+    res.status(204).end();
     return;
   }
   if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET, OPTIONS');
     res.status(405).json({ error: 'Method not allowed. Use GET.' });
     return;
   }
 
-  const minMagnitude = req.query.min_magnitude ? parseFloat(req.query.min_magnitude) : 0;
-  const limit = req.query.limit ? parseInt(req.query.limit, 10) : 200;
+  let minMagnitude;
+  let limit;
+  try {
+    minMagnitude = parseBoundedNumber(req.query?.min_magnitude, 0, 0, 10, 'min_magnitude');
+    limit = parseBoundedNumber(req.query?.limit, 200, 1, 500, 'limit');
+    if (!Number.isInteger(limit)) {
+      const error = new Error('Invalid limit; expected a whole number from 1 to 500.');
+      error.statusCode = 400;
+      throw error;
+    }
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ error: error.message });
+    return;
+  }
 
   try {
-    console.log(`[events/latest] Fetching PHIVOLCS events...`);
-
-    // PHIVOLCS data via web scraping
-    let phivolcsEvents = [];
-    try {
-      phivolcsEvents = await fetchPhivolcsEvents();
-      console.log(`[events/latest] Scraped ${phivolcsEvents.length} PHIVOLCS events`);
-    } catch (err) {
-      console.error('[events/latest] PHIVOLCS scrape failed:', err.message);
-    }
-
-    // Filter by min magnitude
-    if (minMagnitude > 0) {
-      phivolcsEvents = phivolcsEvents.filter(e => e.magnitude >= minMagnitude);
-    }
-
-    // Sort by time descending (newest first)
-    phivolcsEvents.sort((a, b) => b.time - a.time);
-
-    if (limit > 0 && phivolcsEvents.length > limit) {
-      phivolcsEvents = phivolcsEvents.slice(0, limit);
-    }
-
-    console.log(`[events/latest] Returning ${phivolcsEvents.length} PHIVOLCS events`);
+    const sourceEvents = await fetchPhivolcsEvents();
+    const filtered = prepareLatestEvents(sourceEvents, { minMagnitude, limit });
 
     res.status(200).json({
       type: 'FeatureCollection',
       metadata: {
         generated: Date.now(),
-        count: phivolcsEvents.length,
+        count: filtered.length,
         source: 'PHIVOLCS',
-        region: 'Philippines'
+        region: 'Philippines',
+        status: 'ok',
       },
-      events: phivolcsEvents
+      events: filtered,
     });
-  } catch (err) {
-    console.error('[events/latest] Error:', err.message);
-    // Return empty list instead of crashing
-    res.status(200).json({
-      type: 'FeatureCollection',
-      metadata: { generated: Date.now(), count: 0, source: 'PHIVOLCS', region: 'Philippines', error: err.message },
-      events: []
+  } catch (error) {
+    console.error('[events/latest] PHIVOLCS feed failed:', error.message);
+    res.status(502).json({
+      error: 'PHIVOLCS earthquake data is temporarily unavailable.',
+      metadata: {
+        generated: Date.now(),
+        source: 'PHIVOLCS',
+        region: 'Philippines',
+        status: 'unavailable',
+      },
     });
   }
 }
