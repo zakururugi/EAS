@@ -151,3 +151,133 @@ export async function fetchUsgsEvents({
 }
 
 export { USGS_QUERY_URL };
+
+function safeUsgsProductUrl(value, baseUrl) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const url = new URL(value, baseUrl);
+    if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'earthquake.usgs.gov') {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function choosePreferredProduct(products = []) {
+  if (!Array.isArray(products) || products.length === 0) return null;
+  return [...products].sort((a, b) => {
+    const weight = Number(b.preferredWeight || 0) - Number(a.preferredWeight || 0);
+    if (weight !== 0) return weight;
+    return Number(b.updateTime || 0) - Number(a.updateTime || 0);
+  })[0];
+}
+
+export function extractUsgsProducts(properties = {}, baseUrl = 'https://earthquake.usgs.gov/') {
+  const productGroups = properties.products || {};
+  const extract = (kind, patterns) => {
+    const product = choosePreferredProduct(productGroups[kind]);
+    if (!product) return null;
+    const contents = product.contents || {};
+    const files = {};
+    for (const [name, entry] of Object.entries(contents)) {
+      const url = safeUsgsProductUrl(entry?.url, baseUrl);
+      if (url) files[name] = url;
+    }
+    const findFile = (pattern) => {
+      const found = Object.entries(files).find(([name]) => pattern.test(name));
+      return found?.[1] || null;
+    };
+    return {
+      type: kind.toUpperCase(),
+      code: product.code || product.id || '',
+      source: product.source || null,
+      status: product.status || null,
+      updateTime: product.updateTime || null,
+      preferredWeight: product.preferredWeight ?? null,
+      productUrl: safeUsgsProductUrl(product.properties?.url, baseUrl),
+      contourUrl: patterns.contour ? findFile(patterns.contour) : null,
+      geoJsonUrl: patterns.geoJson ? findFile(patterns.geoJson) : null,
+      files,
+      rawProperties: product.properties || {},
+    };
+  };
+
+  return {
+    shakemap: extract('shakemap', {
+      contour: /cont_mi\\.(?:json|geojson)$/i,
+    }),
+    dyfi: extract('dyfi', {
+      geoJson: /dyfi_geo\\.(?:json|geojson)$/i,
+    }),
+  };
+}
+
+async function fetchUsgsProductJson(url) {
+  if (!url) return null;
+  const response = await axios.get(url, {
+    timeout: 20000,
+    maxContentLength: 10 * 1024 * 1024,
+    headers: { Accept: 'application/geo+json, application/json' },
+  });
+  if (!response.data || typeof response.data !== 'object') {
+    throw new Error('USGS product endpoint returned invalid JSON.');
+  }
+  return response.data;
+}
+
+/**
+ * Fetch official USGS event detail plus preferred ShakeMap and DYFI products.
+ * Missing products are returned as null; product URLs are restricted to the
+ * official earthquake.usgs.gov host to prevent arbitrary URL fetching.
+ */
+export async function fetchUsgsEventProducts(eventId) {
+  if (typeof eventId !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(eventId)) {
+    throw new TypeError('Invalid USGS event ID.');
+  }
+
+  const response = await axios.get(USGS_QUERY_URL, {
+    params: { format: 'geojson', eventid: eventId },
+    timeout: 20000,
+    headers: { Accept: 'application/geo+json, application/json' },
+  });
+  const feature = response.data?.features?.[0];
+  if (!feature) throw new Error('USGS event was not found.');
+
+  const initialProperties = feature.properties || {};
+  const detailUrl = safeUsgsProductUrl(initialProperties.detail, USGS_QUERY_URL);
+  if (!detailUrl) throw new Error('USGS event detail URL is unavailable.');
+
+  const detailResponse = await axios.get(detailUrl, {
+    timeout: 20000,
+    maxContentLength: 10 * 1024 * 1024,
+    headers: { Accept: 'application/geo+json, application/json' },
+  });
+  const detailFeature = detailResponse.data?.features?.[0] || detailResponse.data;
+  const properties = detailFeature?.properties || {};
+  const products = extractUsgsProducts(properties, detailUrl);
+
+  const [shakemapResult, dyfiResult] = await Promise.allSettled([
+    fetchUsgsProductJson(products.shakemap?.contourUrl),
+    fetchUsgsProductJson(products.dyfi?.geoJsonUrl),
+  ]);
+
+  return {
+    eventId,
+    detailUrl,
+    magnitude: properties.mag ?? initialProperties.mag ?? null,
+    magnitudeType: properties.magType || initialProperties.magType || null,
+    felt: properties.felt ?? initialProperties.felt ?? null,
+    mmi: properties.mmi ?? initialProperties.mmi ?? null,
+    alert: properties.alert || initialProperties.alert || null,
+    shakemap: products.shakemap
+      ? { ...products.shakemap, geojson: shakemapResult.status === 'fulfilled' ? shakemapResult.value : null,
+          fetchError: shakemapResult.status === 'rejected' ? shakemapResult.reason.message : null }
+      : null,
+    dyfi: products.dyfi
+      ? { ...products.dyfi, geojson: dyfiResult.status === 'fulfilled' ? dyfiResult.value : null,
+          fetchError: dyfiResult.status === 'rejected' ? dyfiResult.reason.message : null }
+      : null,
+  };
+}
