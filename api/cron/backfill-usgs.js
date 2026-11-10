@@ -13,6 +13,7 @@ import { query } from '../_lib/db.js';
 
 const BACKFILL_START = '1900-01-01T00:00:00.000Z';
 const BATCH_DAYS = 7;
+const EVENTS_PER_BATCH = 100;
 const PHILIPPINES_BOUNDS = {
   minLatitude: 0,
   maxLatitude: 25,
@@ -97,6 +98,10 @@ export default async function handler(req, res) {
       state.backfill_completed_through || state.backfill_from || BACKFILL_START
     );
     const backfillEnd = new Date(state.backfill_to || now);
+    const partial = String(state.backfill_cursor || '').match(/^(.*)\\|(\\d+)$/);
+    const offset = partial && new Date(partial[1]).getTime() === batchStart.getTime()
+      ? Number(partial[2])
+      : 0;
 
     if (batchStart >= backfillEnd) {
       await query(
@@ -118,25 +123,30 @@ export default async function handler(req, res) {
       ...PHILIPPINES_BOUNDS,
     });
 
+    const batchEvents = events.slice(offset, offset + EVENTS_PER_BATCH);
     let persisted = 0;
     let shadowMatches = 0;
-    for (const event of events) {
+    for (const event of batchEvents) {
       const result = await persistUsgsEvent(event, query);
       const match = await recordUsgsShadowMatch(event, result.sourceId, query);
       if (match) shadowMatches++;
       persisted++;
     }
 
-    const done = batchEnd >= backfillEnd;
+    const nextOffset = offset + batchEvents.length;
+    const windowHasMore = nextOffset < events.length;
+    const done = !windowHasMore && batchEnd >= backfillEnd;
+    const nextCursor = windowHasMore ? `${batchStart.toISOString()}|${nextOffset}` : null;
     await query(
       `UPDATE source_sync_state
-       SET backfill_completed_through = $1,
+       SET backfill_completed_through = CASE WHEN $1 THEN $2 ELSE backfill_completed_through END,
+           backfill_cursor = $3,
            backfill_last_success_at = NOW(),
-           backfill_status = $2,
+           backfill_status = $4,
            backfill_last_error = NULL,
            updated_at = NOW()
-       WHERE provider = 'USGS' AND lease_owner = $3`,
-      [batchEnd.toISOString(), done ? 'healthy' : 'running', leaseOwner]
+       WHERE provider = 'USGS' AND lease_owner = $5`,
+      [!windowHasMore, batchEnd.toISOString(), nextCursor, done ? 'healthy' : 'running', leaseOwner]
     );
 
     res.status(200).json({
@@ -144,7 +154,9 @@ export default async function handler(req, res) {
       done,
       batchStart: batchStart.toISOString(),
       batchEnd: batchEnd.toISOString(),
-      eventsFetched: events.length,
+      batchOffset: offset,
+      eventsInWindow: events.length,
+      eventsFetched: batchEvents.length,
       eventsPersisted: persisted,
       shadowMatches,
       source: 'USGS supplemental only',
