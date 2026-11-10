@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 INSERT INTO schema_migrations (version)
-VALUES ('20261110_eas_canonical_archive_v2')
+VALUES ('20261110_eas_canonical_archive_v3')
 ON CONFLICT (version) DO NOTHING;
 
 
@@ -314,3 +314,17 @@ ALTER TABLE source_sync_state
     ADD COLUMN IF NOT EXISTS backfill_last_attempt_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS backfill_last_success_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS backfill_last_error TEXT;
+
+
+CREATE TABLE IF NOT EXISTS event_source_revisions (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    event_source_id UUID NOT NULL REFERENCES event_sources(id) ON DELETE CASCADE,
+    source_revision TEXT,
+    content_hash TEXT NOT NULL,
+    raw_payload JSONB NOT NULL,
+    retrieved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (event_source_id, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_source_revisions_source_time
+    ON event_source_revisions (event_source_id, retrieved_at DESC);
