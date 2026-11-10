@@ -140,7 +140,7 @@
       <section class="setting-section">
         <h3>Date Range</h3>
         <p class="setting-desc">
-          Filter earthquakes by date (uses USGS FDSN query when dates are set).
+          Search the EAS historical archive by date. PHIVOLCS remains the official alert source; USGS records are supplemental.
         </p>
         <div class="date-range-group">
           <div class="date-field">
