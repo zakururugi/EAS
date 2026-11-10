@@ -295,3 +295,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 INSERT INTO schema_migrations (version)
 VALUES ('20261110_eas_canonical_archive_v1')
 ON CONFLICT (version) DO NOTHING;
+
+
+-- Provider-specific lease prevents concurrent backfill workers from creating
+-- duplicate canonical rows or moving a checkpoint out of order.
+ALTER TABLE source_sync_state
+    ADD COLUMN IF NOT EXISTS lease_owner TEXT,
+    ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
