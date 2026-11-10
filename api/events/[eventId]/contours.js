@@ -10,7 +10,7 @@
 import { scrapePhivolcsEvents } from '../../_lib/phivolcs-scraper.js';
 
 /**
- * Generate approximate ShakeMap intensity contours.
+ * Generate illustrative modelled MMI contours. Never label these as observations.
  */
 function generateApproximateContours(event) {
   const mag = event.magnitude || 0;
@@ -64,7 +64,7 @@ function generateApproximateContours(event) {
 
     features.push({
       type: 'Feature',
-      properties: { MMI: level.mmi, label: `${level.mmi} – ${mmiDesc}` },
+      properties: { MMI: level.mmi, observationType: 'modelled', label: `Estimated MMI ${level.mmi} – ${mmiDesc}` },
       geometry: {
         type: 'Polygon',
         coordinates: [points],
@@ -74,7 +74,15 @@ function generateApproximateContours(event) {
 
   return {
     type: 'FeatureCollection',
-    metadata: { generated: true, source: 'PHIVOLCS', eventName: event.place },
+    metadata: {
+      generated: true,
+      source: 'EAS_MODEL',
+      modelled: true,
+      observed: false,
+      officialProduct: false,
+      intensityScale: 'MMI (estimated)',
+      eventName: event.place,
+    },
     features,
   };
 }
