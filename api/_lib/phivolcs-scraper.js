@@ -135,8 +135,8 @@ function readTableRows($, table, sourceUrl) {
     const headerText = values.join(' ').toLowerCase();
     const isHeaderRow =
       /date|time/.test(headerText) &&
-      /latitude|\\blat\\b/.test(headerText) &&
-      /longitude|\\blon\\b/.test(headerText) &&
+      /latitude|\blat\b/.test(headerText) &&
+      /longitude|\blon\b/.test(headerText) &&
       /depth/.test(headerText);
 
     if (isHeaderRow) return { isDataRow: false, event: null };
@@ -203,7 +203,7 @@ export function discoverPhivolcsArchiveMonths(html, baseUrl = PHIVOLCS_URLS[0]) 
     if (!href || /^(?:javascript:|mailto:|#)/i.test(href)) return;
 
     const context = `${link.closest('tr').text()} ${link.parent().parent().text()} ${href}`;
-    const yearMatch = context.match(/\\b(19|20)\\d{2}\\b/);
+    const yearMatch = context.match(/\b(19|20)\d{2}\b/);
     if (!yearMatch) return;
 
     let url;
