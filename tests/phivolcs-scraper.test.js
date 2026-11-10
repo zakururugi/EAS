@@ -5,6 +5,7 @@ import {
   parsePhivolcsDatetime,
   parsePhivolcsEventRow,
   parsePhivolcsHtml,
+  discoverPhivolcsArchiveMonths,
 } from '../api/_lib/phivolcs-scraper.js';
 
 test('parses PHIVOLCS morning time as Philippine local time', () => {
@@ -79,4 +80,24 @@ test('rejects PHIVOLCS rows with missing or out-of-range fields', () => {
   assert.equal(parsePhivolcsEventRow(['13 June 2026 - 02:32 AM', '999', '121', '8', '4.8', 'Place']), null);
   assert.equal(parsePhivolcsEventRow(['13 June 2026 - 02:32 AM', '14', '121', '8', '4.8', '']), null);
   assert.equal(parsePhivolcsEventRow(['bad date', '14', '121', '8', '4.8', 'Place']), null);
+});
+
+
+test('discovers official PHIVOLCS monthly archive links by year and month', () => {
+  const html = `
+    <table>
+      <tr>
+        <td>2026</td>
+        <td><a href="/archive/2026/01.html">Jan</a></td>
+        <td><a href="/archive/2026/02.html">February</a></td>
+      </tr>
+      <tr>
+        <td>2025</td>
+        <td><a href="/archive/2025/12.html">December</a></td>
+      </tr>
+      <tr><td><a href="https://example.com/2026/03.html">March</a></td></tr>
+    </table>`;
+  const archives = discoverPhivolcsArchiveMonths(html, 'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html');
+  assert.deepEqual(archives.map((item) => item.key), ['2025-12', '2026-01', '2026-02']);
+  assert.ok(archives.every((item) => item.url.startsWith('https://tsunami.phivolcs.dost.gov.ph/')));
 });
