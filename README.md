@@ -35,7 +35,7 @@ Browser: Vue 3 + Leaflet + OpenStreetMap + Firebase Web SDK
     source         PostgreSQL       Cloud Messaging
                    + PostGIS
         |
-   (USGS supplemental adapter is a separate planned stage)
+   (USGS ComCat adapter + shadow-only cross-source matching)
 ```
 
 ## Stack
@@ -119,12 +119,15 @@ Never prefix database credentials, FCM private keys, or cron secrets with `VITE_
 | Route | Purpose |
 |---|---|
 | `GET /api/events/latest` | Latest PHIVOLCS events; provider failures return an explicit error, not an empty success |
+| `GET /api/events/history` | Keyset-paginated archive with inclusive date filters and source provenance |
 | `GET /api/events/:eventId` | Event details |
 | `GET /api/events/:eventId/contours` | Illustrative modelled contours (not official observations) |
 | `POST /api/push/subscribe` | Register an FCM token |
 | `POST /api/push/unsubscribe` | Remove an FCM token |
 | `GET/POST/DELETE /api/zones` | Manage watch zones |
-| `GET/POST /api/cron/check-quakes` | Protected PHIVOLCS notification check |
+| `GET/POST /api/cron/check-quakes` | Protected PHIVOLCS ingestion and recipient-idempotent notification dispatcher |
+| `POST /api/cron/backfill-phivolcs` | Resumable monthly PHIVOLCS archive backfill; does not send alerts |
+| `POST /api/cron/backfill-usgs` | Resumable USGS supplemental history backfill; does not send alerts |
 
 ## Data and database
 
@@ -139,11 +142,11 @@ The initial EAS database schema includes the existing device, subscription, and 
 - `notification_deliveries`: recipient-level idempotency and retry state.
 - `schema_migrations`: migration version ledger.
 
-Installing this schema does not itself populate historical earthquakes or enable the new ingestion and delivery-ledger flows. Those require separate implementation and verification.
+The archive backfill endpoints process bounded, resumable batches. PHIVOLCS monthly archives are discovered from official PHIVOLCS index links; USGS ComCat history is queried in seven-day windows over the Philippines region. Neither backfill sends notifications. USGS/PHIVOLCS candidate matching is recorded in shadow mode only and never merges records automatically. The archive is limited to records retrievable from the upstream providers, not a claim that every earthquake ever recorded exists online.
 
 ## Scheduler
 
-The cron handler is protected by `CRON_SECRET` and requires the database and Firebase Admin configuration. The repository's `vercel.json` does not define a cron schedule; the active schedule must be verified in the deployment dashboard or the external scheduler before adding another schedule, to avoid duplicate polling.
+The live alert handler is protected by `CRON_SECRET` and requires the database and Firebase Admin configuration. The repository's `vercel.json` does not define a cron schedule; the active schedule must be verified in the deployment dashboard or external scheduler before adding another schedule, to avoid duplicate polling. The two archive backfill endpoints are separate protected POST routes and should be run repeatedly until their progress responses report `done: true`.
 
 ## Map tile usage
 
