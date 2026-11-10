@@ -11,8 +11,10 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 
 const PHIVOLCS_URLS = [
-  'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html',
-  'https://diliman.phivolcs.dost.gov.ph/',
+  // Current official PHIVOLCS earthquake table endpoint.
+  'https://earthquake.phivolcs.dost.gov.ph/Tsunami_Latest.html',
+  // Legacy official host retained as a secondary fallback.
+  'https://tsunami.phivolcs.dost.gov.ph/Tsunami_Latest.html',
 ];
 const PHILIPPINE_OFFSET_MS = 8 * 60 * 60 * 1000;
 
@@ -72,6 +74,25 @@ export function parseDepth(depthStr) {
 }
 
 /**
+ * Parse a coordinate while honoring PHIVOLCS hemisphere suffixes.
+ * Number.parseFloat alone loses S/W signs (e.g. 13.8°S becomes +13.8).
+ */
+export function parsePhivolcsCoordinate(value, positiveHemisphere, negativeHemisphere) {
+  if (typeof value !== 'string' && typeof value !== 'number') return NaN;
+  const text = String(value).trim().replace(/,/g, '');
+  const match = text.match(/^([+-]?\\d+(?:\\.\\d+)?)\\s*°?\\s*([NSEW])?$/i);
+  if (!match) return NaN;
+  let coordinate = Number(match[1]);
+  const hemisphere = (match[2] || '').toUpperCase();
+  if (hemisphere) {
+    if (hemisphere === positiveHemisphere) coordinate = Math.abs(coordinate);
+    else if (hemisphere === negativeHemisphere) coordinate = -Math.abs(coordinate);
+    else return NaN;
+  }
+  return Number.isFinite(coordinate) ? coordinate : NaN;
+}
+
+/**
  * Parse one PHIVOLCS data row in the documented column order:
  * date/time, latitude, longitude, depth, magnitude, location.
  */
@@ -82,8 +103,8 @@ export function parsePhivolcsEventRow(values, sourceUrl = PHIVOLCS_URLS[0]) {
     values.map((value) => String(value ?? '').trim());
 
   const magnitude = Number.parseFloat(magnitudeText);
-  const latitude = Number.parseFloat(latText);
-  const longitude = Number.parseFloat(lonText);
+  const latitude = parsePhivolcsCoordinate(latText, 'N', 'S');
+  const longitude = parsePhivolcsCoordinate(lonText, 'E', 'W');
   const depth = parseDepth(depthText);
   const time = parsePhivolcsDatetime(datetime);
   const place = placeText.replace(/\s+/g, ' ').trim();
