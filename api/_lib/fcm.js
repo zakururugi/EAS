@@ -90,6 +90,8 @@ export async function sendMulticastNotification(
       failureCount: response.failureCount,
       responses: response.responses.map((result) => ({
         success: result.success,
+        messageId: result.messageId || null,
+        code: result.error?.code || null,
         error: result.error?.message || null,
       })),
     };
