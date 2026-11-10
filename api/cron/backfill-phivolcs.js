@@ -13,6 +13,8 @@ import {
 import { persistPhivolcsEvent } from '../_lib/ingestion/persist-phivolcs-event.js';
 import { query } from '../_lib/db.js';
 
+const EVENTS_PER_BATCH = 100;
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -74,7 +76,12 @@ export default async function handler(req, res) {
       [leaseOwner]
     );
     const cursor = stateResult.rows[0]?.backfill_cursor || '';
-    const nextArchive = archives.find((archive) => archive.key > cursor);
+    const partial = cursor.match(/^(\\d{4}-\\d{2}):(\\d+)$/);
+    const activeArchiveKey = partial?.[1] || null;
+    const offset = partial ? Number(partial[2]) : 0;
+    const nextArchive = activeArchiveKey
+      ? archives.find((archive) => archive.key === activeArchiveKey)
+      : archives.find((archive) => archive.key > cursor);
 
     if (!nextArchive) {
       await query(
@@ -96,33 +103,39 @@ export default async function handler(req, res) {
     }
 
     const events = await fetchPhivolcsArchiveMonth(nextArchive.year, nextArchive.month);
+    const batchEvents = events.slice(offset, offset + EVENTS_PER_BATCH);
     let persisted = 0;
-    for (const event of events) {
+    for (const event of batchEvents) {
       await persistPhivolcsEvent(event, query);
       persisted++;
     }
 
-    const remaining = archives.some((archive) => archive.key > nextArchive.key);
+    const nextOffset = offset + batchEvents.length;
+    const monthHasMore = nextOffset < events.length;
+    const laterArchiveExists = archives.some((archive) => archive.key > nextArchive.key);
+    const done = !monthHasMore && !laterArchiveExists;
+    const nextCursor = monthHasMore ? `${nextArchive.key}:${nextOffset}` : nextArchive.key;
     const monthEnd = new Date(Date.UTC(nextArchive.year, nextArchive.month, 0, 23, 59, 59, 999));
 
     await query(
       `UPDATE source_sync_state
        SET backfill_cursor = $1,
-           backfill_completed_through = $2,
+           backfill_completed_through = CASE WHEN $2 THEN $3 ELSE backfill_completed_through END,
            backfill_last_success_at = NOW(),
-           backfill_status = $3,
+           backfill_status = $4,
            backfill_last_error = NULL,
            updated_at = NOW()
-       WHERE provider = 'PHIVOLCS' AND lease_owner = $4`,
-      [nextArchive.key, monthEnd.toISOString(), remaining ? 'running' : 'healthy', leaseOwner]
+       WHERE provider = 'PHIVOLCS' AND lease_owner = $5`,
+      [nextCursor, !monthHasMore, monthEnd.toISOString(), done ? 'healthy' : 'running', leaseOwner]
     );
 
     res.status(200).json({
       checked: true,
-      done: !remaining,
+      done,
       archiveMonth: nextArchive.key,
-      archivesAvailable: archives.length,
-      eventsFetched: events.length,
+      batchOffset: offset,
+      eventsInArchive: events.length,
+      eventsFetched: batchEvents.length,
       eventsPersisted: persisted,
       notificationsSent: 0,
       source: 'PHIVOLCS official archive',
