@@ -1,14 +1,19 @@
 /**
- * PHIVOLCS Earthquake Scraper
+ * PHIVOLCS earthquake feed adapter.
  *
- * Converts the official PHIVOLCS earthquake table into normalized events.
- * PHIVOLCS publishes local Philippine time (UTC+08:00) without an offset.
+ * PHIVOLCS publishes Philippine local time (UTC+08:00) without an offset.
+ * Table discovery is content-based: no fixed table index or CSS class is
+ * assumed. A changed/unrecognizable page fails explicitly instead of
+ * returning a false empty catalogue.
  */
 
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
-const PHIVOLCS_URL = 'https://earthquake.phivolcs.dost.gov.ph/';
+const PHIVOLCS_URLS = [
+  'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html',
+  'https://diliman.phivolcs.dost.gov.ph/',
+];
 const PHILIPPINE_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 const MONTHS = {
@@ -16,10 +21,6 @@ const MONTHS = {
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-/**
- * Parse PHIVOLCS local datetime text into a UTC Unix timestamp.
- * Invalid or missing timestamps return NaN; they are never replaced with now.
- */
 export function parsePhivolcsDatetime(datetimeStr) {
   if (typeof datetimeStr !== 'string' || !datetimeStr.trim()) return NaN;
 
@@ -51,21 +52,17 @@ export function parsePhivolcsDatetime(datetimeStr) {
       check.getUTCDate() !== day ||
       check.getUTCHours() !== hour ||
       check.getUTCMinutes() !== minute
-    ) {
-      return NaN;
-    }
+    ) return NaN;
 
     return localAsUtc - PHILIPPINE_OFFSET_MS;
   }
 
-  // Accept machine-readable timestamps only when they carry an explicit zone.
   const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(cleaned);
   if (!hasTimezone) return NaN;
   const parsed = Date.parse(cleaned);
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 
-/** Parse a depth such as "008" or "015 km". */
 export function parseDepth(depthStr) {
   if (typeof depthStr !== 'string' || !depthStr.trim()) return NaN;
   const match = depthStr.match(/[-+]?\d+(?:\.\d+)?/);
@@ -75,85 +72,241 @@ export function parseDepth(depthStr) {
 }
 
 /**
- * Scrape earthquake events from the official PHIVOLCS website.
- * The HTML structure is checked explicitly so a changed page cannot silently
- * masquerade as a successful empty feed.
+ * Parse one PHIVOLCS data row in the documented column order:
+ * date/time, latitude, longitude, depth, magnitude, location.
  */
-export async function scrapePhivolcsEvents() {
-  const { data: html } = await axios.get(PHIVOLCS_URL, {
-    timeout: 15000,
+export function parsePhivolcsEventRow(values, sourceUrl = PHIVOLCS_URLS[0]) {
+  if (!Array.isArray(values) || values.length < 6) return null;
+
+  const [datetime, latText, lonText, depthText, magnitudeText, placeText] =
+    values.map((value) => String(value ?? '').trim());
+
+  const magnitude = Number.parseFloat(magnitudeText);
+  const latitude = Number.parseFloat(latText);
+  const longitude = Number.parseFloat(lonText);
+  const depth = parseDepth(depthText);
+  const time = parsePhivolcsDatetime(datetime);
+  const place = placeText.replace(/\s+/g, ' ').trim();
+
+  if (
+    !Number.isFinite(magnitude) || magnitude <= 0 || magnitude > 10 ||
+    !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+    !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
+    !Number.isFinite(depth) || !Number.isFinite(time) || !place
+  ) return null;
+
+  const id = `ph-${time}-${magnitude}-${latitude}-${longitude}`;
+  return {
+    id,
+    eventId: id,
+    magnitude,
+    place,
+    time,
+    updated: time,
+    depth,
+    latitude,
+    longitude,
+    url: sourceUrl,
+    felt: 0,
+    mmi: null,
+    source: 'PHIVOLCS',
+  };
+}
+
+function looksLikeEarthquakeHeader($, table) {
+  const text = $(table).find('tr').slice(0, 3).text().toLowerCase().replace(/\s+/g, ' ');
+  const groups = [
+    /date|time/,
+    /latitude|\blat\b/,
+    /longitude|\blongitude|\blon\b/,
+    /depth/,
+    /magnitude|\bmag\b/,
+    /location|\bplace\b/,
+  ];
+  return groups.filter((pattern) => pattern.test(text)).length >= 4;
+}
+
+function readTableRows($, table, sourceUrl) {
+  return $(table).find('tr').toArray().map((row) => {
+    const cells = $(row).find('td').toArray();
+    if (cells.length < 6) return { isDataRow: false, event: null };
+
+    const values = cells.slice(0, 6).map((cell) => $(cell).text().trim());
+    const headerText = values.join(' ').toLowerCase();
+    const isHeaderRow =
+      /date|time/.test(headerText) &&
+      /latitude|\blat\b/.test(headerText) &&
+      /longitude|\blon\b/.test(headerText) &&
+      /depth/.test(headerText);
+
+    if (isHeaderRow) return { isDataRow: false, event: null };
+    return { isDataRow: true, event: parsePhivolcsEventRow(values, sourceUrl) };
+  });
+}
+
+export function parsePhivolcsHtml(html, sourceUrl = PHIVOLCS_URLS[0]) {
+  if (typeof html !== 'string' || !html.trim()) {
+    throw new Error('PHIVOLCS returned an empty HTML document.');
+  }
+
+  const $ = cheerio.load(html);
+  const tables = $('table').toArray();
+  if (tables.length === 0) {
+    throw new Error('PHIVOLCS earthquake table not found. Site structure may have changed.');
+  }
+
+  const discoveredEvents = [];
+  let recognizedEmptyTable = false;
+  let malformedDataTable = false;
+
+  for (const table of tables) {
+    const rows = readTableRows($, table, sourceUrl);
+    const validRows = rows.map((row) => row.event).filter(Boolean);
+    const dataRowCount = rows.filter((row) => row.isDataRow).length;
+    const recognizedHeader = looksLikeEarthquakeHeader($, table);
+
+    if (validRows.length > 0) {
+      discoveredEvents.push(...validRows);
+    } else if (recognizedHeader && dataRowCount === 0) {
+      recognizedEmptyTable = true;
+    } else if (recognizedHeader && dataRowCount > 0) {
+      malformedDataTable = true;
+    }
+  }
+
+  if (discoveredEvents.length === 0) {
+    if (recognizedEmptyTable && !malformedDataTable) return [];
+    throw new Error('PHIVOLCS page was reachable but no valid earthquake rows could be parsed.');
+  }
+
+  const uniqueEvents = new Map();
+  for (const event of discoveredEvents) uniqueEvents.set(event.id, event);
+  return [...uniqueEvents.values()].sort((a, b) => b.time - a.time);
+}
+
+const MONTH_NUMBERS = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+export function discoverPhivolcsArchiveMonths(html, baseUrl = PHIVOLCS_URLS[0]) {
+  const $ = cheerio.load(html);
+  const discovered = new Map();
+
+  $('a[href]').each((_, anchor) => {
+    const link = $(anchor);
+    const label = link.text().trim().toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
+    const month = MONTH_NUMBERS[label];
+    if (!month) return;
+
+    const href = link.attr('href');
+    if (!href || /^(?:javascript:|mailto:|#)/i.test(href)) return;
+
+    const context = `${link.closest('tr').text()} ${link.parent().parent().text()} ${href}`;
+    const yearMatch = context.match(/\b(19|20)\d{2}\b/);
+    if (!yearMatch) return;
+
+    let url;
+    try {
+      url = new URL(href, baseUrl);
+    } catch {
+      return;
+    }
+    if (
+      url.protocol !== 'https:' ||
+      !url.hostname.toLowerCase().endsWith('phivolcs.dost.gov.ph')
+    ) return;
+
+    const year = Number(yearMatch[0]);
+    const key = `${year}-${String(month).padStart(2, '0')}`;
+    discovered.set(key, { year, month, key, url: url.toString() });
+  });
+
+  return [...discovered.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+export async function fetchPhivolcsArchiveMonths() {
+  const failures = [];
+  const all = new Map();
+
+  for (const sourceUrl of PHIVOLCS_URLS) {
+    try {
+      const { data: html } = await axios.get(sourceUrl, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      });
+      for (const archive of discoverPhivolcsArchiveMonths(html, sourceUrl)) {
+        all.set(archive.key, archive);
+      }
+    } catch (error) {
+      failures.push(`${sourceUrl}: ${error.message}`);
+    }
+  }
+
+  if (all.size === 0 && failures.length > 0) {
+    throw new Error(`Unable to discover PHIVOLCS archive months: ${failures.join(' | ')}`);
+  }
+  return [...all.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+export async function fetchPhivolcsArchiveMonth(year, month) {
+  if (!Number.isInteger(year) || year < 1900 || year > new Date().getUTCFullYear()) {
+    throw new TypeError('Invalid PHIVOLCS archive year.');
+  }
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    throw new TypeError('Invalid PHIVOLCS archive month.');
+  }
+
+  const key = `${year}-${String(month).padStart(2, '0')}`;
+  const archives = await fetchPhivolcsArchiveMonths();
+  const archive = archives.find((item) => item.key === key);
+  if (!archive) throw new Error(`PHIVOLCS archive month ${key} is not currently linked by the official archive index.`);
+
+  const { data: html } = await axios.get(archive.url, {
+    timeout: 20000,
     headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
       Accept: 'text/html,application/xhtml+xml',
     },
   });
+  return parsePhivolcsHtml(html, archive.url);
+}
 
-  const $ = cheerio.load(html);
-  const tables = $('table.MsoNormalTable');
-  if (tables.length < 3) {
-    throw new Error('PHIVOLCS earthquake table not found. Site structure may have changed.');
-  }
+export async function scrapePhivolcsEvents() {
+  const failures = [];
+  let recognizedEmptyFeed = false;
 
-  const events = [];
-
-  for (let t = 2; t < tables.length; t++) {
-    $(tables[t]).find('tr').each((i, row) => {
-      const cells = $(row).find('td');
-      if (cells.length < 6) return;
-
-      const datetime = $(cells[0]).text().trim();
-      const latStr = $(cells[1]).text().trim();
-      const lonStr = $(cells[2]).text().trim();
-      const depthStr = $(cells[3]).text().trim();
-      const magStr = $(cells[4]).text().trim();
-      const place = $(cells[5]).text().trim();
-
-      const magnitude = Number.parseFloat(magStr);
-      const latitude = Number.parseFloat(latStr);
-      const longitude = Number.parseFloat(lonStr);
-      const depth = parseDepth(depthStr);
-      const time = parsePhivolcsDatetime(datetime);
-
-      if (
-        !Number.isFinite(magnitude) || magnitude <= 0 || magnitude > 10 ||
-        !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-        !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
-        !Number.isFinite(depth) || !Number.isFinite(time) || !place
-      ) {
-        return;
-      }
-
-      // Include coordinates in the deterministic ID to avoid collisions when
-      // two events share a timestamp and magnitude.
-      const id = `ph-${time}-${magnitude}-${latitude}-${longitude}`;
-
-      events.push({
-        id,
-        eventId: id,
-        magnitude,
-        place,
-        time,
-        updated: time,
-        depth,
-        latitude,
-        longitude,
-        url: PHIVOLCS_URL,
-        felt: 0,
-        mmi: null,
-        source: 'PHIVOLCS',
+  for (const sourceUrl of PHIVOLCS_URLS) {
+    try {
+      const { data: html } = await axios.get(sourceUrl, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
       });
-    });
+
+      const events = parsePhivolcsHtml(html, sourceUrl);
+      if (events.length > 0) return events;
+      recognizedEmptyFeed = true;
+    } catch (error) {
+      failures.push(`${sourceUrl}: ${error.message}`);
+    }
   }
 
-  return events;
+  if (recognizedEmptyFeed) return [];
+  throw new Error(`All official PHIVOLCS feed endpoints failed: ${failures.join(' | ')}`);
 }
 
 /**
- * Fetch events. Errors are allowed to propagate to callers so API routes and
- * cron jobs can distinguish a failed scrape from a genuinely empty feed.
+ * Fetch events. Errors propagate so API routes and cron jobs can distinguish
+ * a failed scrape from a genuinely empty, recognized feed.
  */
 export async function fetchPhivolcsEvents() {
   const events = await scrapePhivolcsEvents();
-  console.log(`[phivolcs-scraper] Scraped ${events.length} events`);
+  console.log(`[phivolcs-scraper] Parsed ${events.length} events`);
   return events;
 }
