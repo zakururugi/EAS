@@ -57,6 +57,22 @@ export async function fetchLatestEvents({ minMagnitude, limit } = {}) {
 }
 
 /**
+ * Fetch a page of canonical earthquake history from the EAS archive.
+ * Dates are inclusive calendar dates; the backend uses stable keyset paging.
+ */
+export async function fetchEventHistory({ from, to, minMagnitude, limit = 500, cursor } = {}) {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (minMagnitude != null) params.set('min_magnitude', String(minMagnitude));
+  if (limit) params.set('limit', String(limit));
+  if (cursor) params.set('cursor', cursor);
+
+  const query = params.toString();
+  return request(`/events/history${query ? `?${query}` : ''}`);
+}
+
+/**
  * Fetch event details including ShakeMap URL.
  *
  * @param {string} eventId - USGS event ID
