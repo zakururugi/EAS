@@ -14,7 +14,7 @@ import postgres from 'postgres';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const MIGRATION_VERSION = '20261110_eas_canonical_archive_v1';
+const MIGRATION_VERSION = '20261110_eas_canonical_archive_v2';
 
 export function splitSqlStatements(source) {
   const statements = [];
