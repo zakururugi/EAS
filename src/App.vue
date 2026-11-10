@@ -360,6 +360,9 @@ export default {
         const existingIds = new Set(events.value.map((event) => event.id));
         const additionalEvents = data.events.filter((event) => !existingIds.has(event.id));
         events.value = [...events.value, ...additionalEvents];
+        if (additionalEvents.some((event) => event.source === 'PHIVOLCS')) {
+          hasPHIVOLCS.value = true;
+        }
         historyCursor.value = data.metadata?.nextCursor || null;
         historyHasMore.value = data.metadata?.hasMore === true;
 
