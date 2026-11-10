@@ -293,7 +293,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 
 INSERT INTO schema_migrations (version)
-VALUES ('20261110_eas_canonical_archive_v1')
+VALUES ('20261110_eas_canonical_archive_v2')
 ON CONFLICT (version) DO NOTHING;
 
 
