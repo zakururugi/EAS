@@ -98,7 +98,7 @@ export default async function handler(req, res) {
       state.backfill_completed_through || state.backfill_from || BACKFILL_START
     );
     const backfillEnd = new Date(state.backfill_to || now);
-    const partial = String(state.backfill_cursor || '').match(/^(.*)\\|(\\d+)$/);
+    const partial = String(state.backfill_cursor || '').match(/^(.*)\|(\d+)$/);
     const offset = partial && new Date(partial[1]).getTime() === batchStart.getTime()
       ? Number(partial[2])
       : 0;
