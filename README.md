@@ -1,446 +1,163 @@
-# Earthquake Alert System
+# Earthquake Alert System (EAS)
 
-A **progressive web application** (PWA) for real-time earthquake monitoring with push notifications. Built with Vue 3, Leaflet, Firebase Cloud Messaging, and Vercel serverless functions.
+A Vue 3 progressive web app for monitoring Philippine earthquakes, viewing epicenters on a Leaflet map, defining watch zones, and receiving push alerts.
 
-![Earthquake Alert System screenshot](public/icons/icon.svg)
+## Source and alert policy
 
-## Features
+- **PHIVOLCS is the authoritative source for Philippine earthquake alerts.**
+- Only PHIVOLCS-backed events may independently qualify for push notifications.
+- USGS is intended as a supplemental source for cross-reference and additional products; USGS-only events must not independently trigger EAS push alerts.
+- Source values and provenance must remain separate. Magnitudes from different agencies must never be averaged.
+- Synthetic intensity contours and shaking timelines are model estimates, not observed intensity data or official ShakeMaps.
 
-- 🌍 **Interactive Map** — Dark-themed Leaflet map showing USGS earthquake epicenters (M4.5+, last 30 days), colored by magnitude
-- 📊 **Earthquake List** — Sortable sidebar (by time, magnitude, distance from you)
-- 🔔 **Push Notifications** — FCM-based alerts when earthquakes occur in your custom watch zones
-- 🗺️ **Watch Zones** — Draw polygons on the map to define areas you care about
-- 📈 **ShakeMap Overlay** — MMI intensity contours for selected earthquakes with legend
-- 👤 **"I Felt It"** — Crowdsourced intensity reporting (placeholder, integrates with USGS DYFI)
-- 📱 **PWA** — Installable on mobile/desktop, works offline for cached content
-- ⚡ **Real-time** — Auto-refreshes every 60 seconds
+## Current features
+
+- Leaflet map with OpenStreetMap tiles and attribution (no map API key required).
+- PHIVOLCS latest-earthquake feed.
+- Sortable event sidebar and event selection/share links.
+- User location and location-follow controls.
+- User-drawn watch-zone polygons.
+- Firebase Cloud Messaging subscription support.
+- IndexedDB cache for recent events, zones, and intensity overlays.
+- PWA installability and offline fallback.
+- Clearly labelled illustrative shaking estimates.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────┐
-│                  Browser (PWA)               │
-│  Vue 3 + Vite + Leaflet + Firebase Web SDK  │
-│         firebase-messaging-sw.js             │
-└──────────────────┬──────────────────────────┘
-                   │
-          Vercel Rewrites (same origin)
-                   │
-┌──────────────────▼──────────────────────────┐
-│          Vercel Serverless Functions          │
-│                                              │
-│  /api/events/latest       → USGS proxy       │
-│  /api/events/[id]         → Event details    │
-│  /api/events/[id]/contours→ ShakeMap proxy   │
-│  /api/push/subscribe      → Save FCM token   │
-│  /api/push/unsubscribe    → Remove token     │
-│  /api/zones               → Watch zones CRUD │
-│  /api/cron/check-quakes   → Cron: poll USGS  │
-│                              + send FCM      │
-└──────────────────┬──────────────────────────┘
-                   │
-     ┌─────────────┴─────────────┐
-     │                           │
-     ▼                           ▼
-┌──────────────┐       ┌──────────────────┐
-│  Vercel      │       │  USGS Earthquake  │
-│  Postgres    │       │  API (REST)       │
-│  (PostGIS)   │       │  earthquake.usgs  │
-│  - users     │       │  .gov             │
-│  - push_     │       └──────────────────┘
-│    subs      │
-│  - watch_    │
-│    zones     │
-│  - cron_     │
-│    state     │
-└──────────────┘
+```text
+Browser: Vue 3 + Leaflet + OpenStreetMap + Firebase Web SDK
+                       |
+                EAS API routes
+                       |
+        +--------------+----------------+
+        |              |                |
+    PHIVOLCS       Supabase         Firebase
+    source         PostgreSQL       Cloud Messaging
+                   + PostGIS
+        |
+   (USGS supplemental adapter is a separate planned stage)
 ```
 
-## Tech Stack
+## Stack
 
 | Layer | Technology |
-|-------|-----------|
-| **Frontend** | Vue 3 (Composition API), Vite, Leaflet, Leaflet.draw, Firebase Web SDK |
-| **Backend** | Vercel Serverless Functions (Node.js) |
-| **Database** | PostgreSQL + PostGIS (Vercel Postgres) |
-| **Push Notifications** | Firebase Cloud Messaging (FCM) |
-| **Maps** | OpenStreetMap (CARTO dark tiles), USGS ShakeMap |
-| **PWA** | vite-plugin-pwa (Workbox) |
-| **Deployment** | Vercel (with Cron Jobs) |
+|---|---|
+| Frontend | Vue 3, Vite, Leaflet |
+| Map tiles | OpenStreetMap |
+| Backend | Vercel serverless functions, Node.js 22 |
+| Database | Supabase PostgreSQL + PostGIS |
+| SQL client | `postgres` |
+| Push | Firebase Cloud Messaging |
+| PWA | vite-plugin-pwa |
+| CI | GitHub Actions |
 
-## Prerequisites
+## Local setup
 
-- [Node.js](https://nodejs.org/) >= 18
-- [Vercel CLI](https://vercel.com/cli) (for deployment)
-- A [Firebase](https://firebase.google.com/) project with Cloud Messaging enabled
-- A [Vercel](https://vercel.com/) account with Postgres integration
+### Requirements
 
-## Quick Start
+- Node.js 22
+- npm
+- Supabase PostgreSQL project for database-backed features
+- Firebase project for push notifications
 
-### 1. Clone and Install
-
-```bash
-git clone <your-repo-url>
-cd quake-alert
-npm install
-```
-
-### 2. Firebase Setup
-
-1. Go to the [Firebase Console](https://console.firebase.google.com/)
-2. Create a new project (or use existing)
-3. Enable **Cloud Messaging** (API) in the project settings
-4. Register a **Web App** to get the Firebase config object
-   - Project Settings > General > Your apps > Add app > Web
-   - Copy the `firebaseConfig` object
-5. Generate a **VAPID key** for Web Push
-   - Project Settings > Cloud Messaging > Web Push certificates > Generate Key Pair
-   - Copy the key pair value (starts with `BEl...`)
-6. Generate a **Service Account key** (for the admin SDK)
-   - Project Settings > Service Accounts > Generate new private key
-   - This downloads a JSON file — extract `project_id`, `client_email`, and `private_key`
-
-### 3. Environment Variables
+### Install
 
 ```bash
+npm ci
 cp .env.example .env.local
 ```
 
-Edit `.env.local` with your Firebase credentials and database URL:
+Set the environment variables in `.env.local`. See [Supabase setup](docs/SUPABASE_SETUP.md).
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | Postgres connection string (with PostGIS) |
-| `FCM_PROJECT_ID` | Firebase project ID (from service account) |
-| `FCM_CLIENT_EMAIL` | Firebase client email (from service account) |
-| `FCM_PRIVATE_KEY` | Firebase private key (from service account) |
-| `CRON_SECRET` | Random string to protect the cron endpoint |
-| `VITE_FIREBASE_CONFIG` | Firebase web app config as a **JSON string** |
-| `VITE_FIREBASE_VAPID_KEY` | VAPID public key for Web Push |
+### Database migration
 
-**Important for `FCM_PRIVATE_KEY`:** The private key contains newlines. Set it as a single line with `\n` for line breaks:
-```
-FCM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvQ...\n-----END PRIVATE KEY-----\n"
-```
-
-**Important for `VITE_FIREBASE_CONFIG`:** This must be a **stringified JSON object**. In Vercel, set it with escaped quotes:
-```
-VITE_FIREBASE_CONFIG='{"apiKey":"AIza...","authDomain":"...",...}'
-```
-
-### 4. Database Migration
-
-First, make sure your Postgres database has the PostGIS extension:
-
-```bash
-psql $DATABASE_URL -c "CREATE EXTENSION IF NOT EXISTS postgis;"
-```
-
-Then run the full migration:
+Use the Supabase **Transaction pooler** PostgreSQL URI as `DATABASE_URL`, then run:
 
 ```bash
 npm run migrate
 ```
 
-Or manually:
+The migration preserves existing user/subscription/watch-zone tables and adds the canonical event archive and notification ledger. It is additive; still take a backup before applying it to a database with real user data.
 
-```bash
-psql $DATABASE_URL -f db/migrations.sql
-```
-
-### 5. Local Development
+### Run
 
 ```bash
 npm run dev
 ```
 
-The app will be available at `http://localhost:5173`.
-
-**Note:** For local development, the API functions need to be served separately. The preferred approach is to use the Vercel CLI:
+For local serverless API routes, use the Vercel CLI:
 
 ```bash
 vercel dev
 ```
 
-This runs both the Vite dev server and serverless functions locally.
-
-### 6. Generate PWA Icons
-
-Place the following icon files in `public/icons/`:
-- `icon-192x192.png` (192×192)
-- `icon-512x512.png` (512×512)
-
-You can use any PNG icon generator or the provided SVG as a source.
-
-### 7. Configure `firebase-messaging-sw.js`
-
-Edit `public/firebase-messaging-sw.js` and replace the `FIREBASE_CONFIG` placeholder with your actual Firebase web app config:
-
-```js
-const FIREBASE_CONFIG = {
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'YOUR_PROJECT.firebaseapp.com',
-  projectId: 'YOUR_PROJECT_ID',
-  storageBucket: 'YOUR_PROJECT.appspot.com',
-  messagingSenderId: 'YOUR_SENDER_ID',
-  appId: 'YOUR_APP_ID',
-};
-```
-
-## Deployment to Vercel
-
-### Step 1: Push to Git
+### Tests and build
 
 ```bash
-git init
-git add .
-git commit -m "Initial commit: Earthquake Alert System"
-git remote add origin <your-repo-url>
-git push -u origin main
+npm test
+npm run build
 ```
 
-### Step 2: Import to Vercel
+## Environment variables
 
-1. Go to [Vercel Dashboard](https://vercel.com/new)
-2. Import your Git repository
-3. Configure:
-   - **Framework Preset:** Vite
-   - **Build Command:** `npm run build`
-   - **Output Directory:** `dist`
-   - **Root Directory:** `quake-alert` (if using monorepo)
+See `.env.example`.
 
-### Step 3: Set Environment Variables
+| Variable | Use |
+|---|---|
+| `DATABASE_URL` | Private Supabase PostgreSQL transaction-pooler URI |
+| `CRON_SECRET` | Bearer secret for the protected cron endpoint |
+| `FCM_PROJECT_ID` | Firebase Admin project ID |
+| `FCM_CLIENT_EMAIL` | Firebase Admin service-account email |
+| `FCM_PRIVATE_KEY` | Firebase Admin private key |
+| `VITE_FIREBASE_CONFIG` | Public Firebase Web App configuration JSON |
+| `VITE_FIREBASE_VAPID_KEY` | Public Web Push VAPID key |
 
-In the Vercel project settings, add all environment variables from `.env.example`:
+Never prefix database credentials, FCM private keys, or cron secrets with `VITE_`. Do not put Supabase secret API keys in browser code.
 
-- `DATABASE_URL`
-- `FCM_PROJECT_ID`
-- `FCM_CLIENT_EMAIL`
-- `FCM_PRIVATE_KEY`
-- `CRON_SECRET`
-- `VITE_FIREBASE_CONFIG`
-- `VITE_FIREBASE_VAPID_KEY`
+## API routes
 
-### Step 4: Link Vercel Postgres
+| Route | Purpose |
+|---|---|
+| `GET /api/events/latest` | Latest PHIVOLCS events; provider failures return an explicit error, not an empty success |
+| `GET /api/events/:eventId` | Event details |
+| `GET /api/events/:eventId/contours` | Illustrative modelled contours (not official observations) |
+| `POST /api/push/subscribe` | Register an FCM token |
+| `POST /api/push/unsubscribe` | Remove an FCM token |
+| `GET/POST/DELETE /api/zones` | Manage watch zones |
+| `GET/POST /api/cron/check-quakes` | Protected PHIVOLCS notification check |
 
-1. In Vercel Dashboard, go to **Storage > Create Database > Postgres**
-2. Select your project and region
-3. Vercel will automatically add the `DATABASE_URL` and related env vars
-4. Run the migration:
-   ```bash
-   vercel env pull .env.production.local
-   DATABASE_URL=$(grep DATABASE_URL .env.production.local | cut -d '=' -f2-) npm run migrate
-   ```
+## Data and database
 
-### Step 5: Deploy
+The initial EAS database schema includes the existing device, subscription, and watch-zone tables. The additive archive schema introduces:
 
-```bash
-vercel --prod
-```
+- `earthquake_events`: canonical event records.
+- `event_sources`: provider-specific source values and raw payload provenance.
+- `event_matches`: auditable cross-provider matching decisions.
+- `event_revisions`: source and canonical event change history.
+- `intensity_observations`: explicitly typed PEIS/MMI observations and modelled products.
+- `source_sync_state`: independent provider and backfill checkpoints.
+- `notification_deliveries`: recipient-level idempotency and retry state.
+- `schema_migrations`: migration version ledger.
 
-### Step 6: Set Up External Cron (cron-job.org)
+Installing this schema does not itself populate historical earthquakes or enable the new ingestion and delivery-ledger flows. Those require separate implementation and verification.
 
-Since Vercel's Hobby plan only supports cron jobs once per day, use **cron-job.org** (free) to call the endpoint every minute.
+## Scheduler
 
-1. **Sign up** at [cron-job.org](https://cron-job.org)
-2. **Create a new cron job** with these settings:
-   - **URL**: `https://your-app.vercel.app/api/cron/check-quakes`
-   - **Method**: `GET` (or `POST`)
-   - **Headers** (add a custom HTTP header):
-     - Name: `Authorization`
-     - Value: `Bearer YOUR_CRON_SECRET` (use the same value as your `CRON_SECRET` env var)
-   - **Schedule**: `*/1 * * * *` (every minute)
-3. Save and enable the cron job.
+The cron handler is protected by `CRON_SECRET` and requires the database and Firebase Admin configuration. The repository's `vercel.json` does not define a cron schedule; the active schedule must be verified in the deployment dashboard or the external scheduler before adding another schedule, to avoid duplicate polling.
 
-### Step 7: Test the Cron Endpoint
+## Map tile usage
 
-Once deployed, test the cron endpoint manually:
+The map uses the standard OpenStreetMap tile service with attribution. It requires no API key or account, but it is a community-operated service with a usage policy. Do not bulk-download tiles or use it as an offline tile archive.
 
-```bash
-curl -H "Authorization: Bearer YOUR_CRON_SECRET" \
-  https://your-app.vercel.app/api/cron/check-quakes
-```
+## Safety and data interpretation
 
-Expected response:
-```json
-{
-  "checked": true,
-  "newEvents": 0,
-  "processedEvents": 0,
-  "notificationsSent": 0,
-  "durationMs": 1234
-}
-```
-
-You can also test the health check endpoint (no auth required):
-```bash
-curl https://your-app.vercel.app/api/cron/health
-# → { "status": "ok", "timestamp": ..., "version": "1.0.0" }
-```
-The health endpoint is useful for cron-job.org to verify your site is alive.
-
-## API Reference
-
-### `GET /api/events/latest`
-Proxies the USGS 4.5_day feed.
-
-**Query params:**
-- `min_magnitude` (number) — Filter by minimum magnitude
-- `limit` (number) — Max results
-
-### `GET /api/events/:eventId`
-Returns event details and ShakeMap URL.
-
-### `GET /api/events/:eventId/contours`
-Proxies the ShakeMap `cont_mi.json` file.
-
-### `POST /api/push/subscribe`
-Save FCM subscription.
-
-**Body:**
-```json
-{
-  "device_id": "uuid",
-  "fcm_token": "token",
-  "device_info": "Chrome on Windows"
-}
-```
-
-### `DELETE /api/push/unsubscribe`
-Remove subscription.
-
-**Body/Query:**
-```json
-{ "fcm_token": "token" }
-```
-
-### `GET /api/zones?device_id=xxx`
-List watch zones for device.
-
-### `POST /api/zones`
-Create a watch zone.
-
-**Body:**
-```json
-{
-  "device_id": "uuid",
-  "name": "My Zone",
-  "polygon": [[lon, lat], [lon, lat], ...],
-  "min_magnitude": 4.5
-}
-```
-
-### `GET /api/cron/check-quakes`
-Protected cron endpoint (requires `Authorization: Bearer <CRON_SECRET>`).
-
-## Database Schema
-
-See `db/migrations.sql` for the complete schema:
-
-- **users** — Device registrations
-- **push_subscriptions** — FCM tokens
-- **watch_zones** — GeoJSON polygon zones with PostGIS `geography(POLYGON, 4326)`
-- **cron_state** — Singleton row tracking last USGS poll
-
-The `find_subscriptions_for_epicenter()` function uses `ST_Contains` for spatial matching.
-
-## Project Structure
-
-```
-quake-alert/
-├── api/                       # Serverless functions
-│   ├── _lib/
-│   │   ├── db.js             # Postgres connection helper
-│   │   ├── fcm.js            # Firebase Admin SDK helper
-│   │   └── usgs.js           # USGS API helpers
-│   ├── cron/
-│   │   └── check-quakes.js   # Cron job (every minute)
-│   ├── events/
-│   │   ├── latest.js         # GET latest earthquakes
-│   │   └── [eventId]/
-│   │       ├── index.js      # GET event details
-│   │       └── contours.js   # GET ShakeMap contours
-│   ├── push/
-│   │   ├── subscribe.js      # POST subscribe
-│   │   └── unsubscribe.js    # DELETE unsubscribe
-│   └── zones.js              # GET/POST/DELETE watch zones
-├── db/
-│   ├── migrations.sql        # Full SQL schema
-│   └── migrate.js            # Migration runner script
-├── public/
-│   ├── icons/                # PWA icons (SVG + PNG)
-│   ├── firebase-messaging-sw.js  # FCM service worker
-│   └── manifest.json         # PWA manifest
-├── src/
-│   ├── components/
-│   │   ├── MapView.vue       # Leaflet map + epicenters + contours
-│   │   ├── Sidebar.vue       # Earthquake list + sort controls
-│   │   └── SettingsPanel.vue # Push toggle + zones + magnitude slider
-│   ├── lib/
-│   │   ├── api.js            # API client (fetch wrapper)
-│   │   ├── device.js         # Device ID management
-│   │   └── fcm.js            # FCM token + foreground messages
-│   ├── App.vue               # Root component + state management
-│   └── main.js               # Vue app entry point
-├── .env.example              # Environment variables template
-├── index.html                # HTML entry point
-├── package.json              # Dependencies and scripts
-├── vercel.json               # Vercel config (cron, rewrites)
-└── vite.config.js            # Vite + PWA plugin config
-```
-
-## Development
-
-### Adding a New Feature
-
-1. **Frontend:** Add component in `src/components/`, add API call in `src/lib/api.js`
-2. **Backend:** Add new route in `api/` directory
-3. **Database:** Add migration in `db/migrations.sql`
-
-### Testing the Cron Job
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_CRON_SECRET" \
-  -H "Content-Type: application/json" \
-  https://your-app.vercel.app/api/cron/check-quakes
-```
-
-### Adding a New USGS Feed
-
-The default feed is `4.5_day`. To use others (e.g., `all_day`, `significant_week`), pass the `?feed=` query parameter:
-
-```
-/api/events/latest?feed=earthquakes/feed/v1.0/summary/all_day.geojson
-/api/events/latest?feed=earthquakes/feed/v1.0/summary/2.5_week.geojson
-/api/events/latest?feed=earthquakes/feed/v1.0/summary/1.0_day.geojson
-```
-
-## Troubleshooting
-
-### "VITE_FIREBASE_CONFIG not set"
-Set the `VITE_FIREBASE_CONFIG` environment variable in Vercel or `.env.local`.
-
-### Push notifications not working
-1. Check browser console for FCM errors
-2. Ensure VAPID key is correct
-3. Verify service worker is registered: `chrome://serviceworker-internals/`
-4. Check Firebase project has Cloud Messaging enabled
-
-### Cron job fails with 401
-The `CRON_SECRET` environment variable doesn't match between what's set and what's sent in the `Authorization` header.
-
-### PostGIS errors
-Ensure PostGIS extension is installed: `CREATE EXTENSION IF NOT EXISTS postgis;`
+- A provider outage must not be presented as a valid empty earthquake catalogue.
+- A failed refresh must not erase the last-known-good event list.
+- PHIVOLCS and USGS measurements remain separate source observations.
+- PEIS and MMI are different intensity scales and must not be silently converted or combined.
+- Modelled contours must never be labelled as official PHIVOLCS observations or USGS ShakeMap products.
+- Notification retries must be recipient-level and idempotent to avoid duplicate alerts.
 
 ## License
 
 MIT
-
-## Acknowledgments
-
-- [USGS Earthquake Hazards Program](https://earthquake.usgs.gov/)
-- [Firebase Cloud Messaging](https://firebase.google.com/docs/cloud-messaging)
-- [Leaflet](https://leafletjs.com/) + [Leaflet.draw](https://leaflet.github.io/Leaflet.draw/)
-- [Vercel](https://vercel.com/) with Postgres + Cron Jobs
-- [CARTO](https://carto.com/) for dark map tiles
