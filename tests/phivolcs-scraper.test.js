@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseDepth,
   parsePhivolcsDatetime,
+  parsePhivolcsCoordinate,
   parsePhivolcsEventRow,
   parsePhivolcsHtml,
   discoverPhivolcsArchiveMonths,
@@ -35,6 +36,16 @@ test('accepts explicit timezone timestamps', () => {
   );
 });
 
+
+test('preserves coordinate hemisphere signs for global PHIVOLCS events', () => {
+  assert.equal(parsePhivolcsCoordinate('14.5°N', 'N', 'S'), 14.5);
+  assert.equal(parsePhivolcsCoordinate('13.8°S', 'N', 'S'), -13.8);
+  assert.equal(parsePhivolcsCoordinate('121.0°E', 'E', 'W'), 121);
+  assert.equal(parsePhivolcsCoordinate('68.0°W', 'E', 'W'), -68);
+  assert.equal(parsePhivolcsCoordinate('-13.8', 'N', 'S'), -13.8);
+  assert.ok(Number.isNaN(parsePhivolcsCoordinate('14.5°W', 'N', 'S')));
+});
+
 test('parses valid depth values', () => {
   assert.equal(parseDepth('008'), 8);
   assert.equal(parseDepth('15.5 km'), 15.5);
@@ -52,7 +63,7 @@ test('parses PHIVOLCS rows from a table regardless of CSS class or table index',
     <table><tr><td>Navigation</td></tr></table>
     <table>
       <tr><td>Date - Time</td><td>Latitude</td><td>Longitude</td><td>Depth</td><td>Magnitude</td><td>Location</td></tr>
-      <tr><td>13 June 2026 - 02:32 AM</td><td>14.5</td><td>121.0</td><td>008 km</td><td>4.8</td><td>Batangas</td></tr>
+      <tr><td>13 June 2026 - 02:32 AM</td><td>14.5°N</td><td>121.0°E</td><td>008 km</td><td>4.8</td><td>Batangas</td></tr>
     </table>`;
   const events = parsePhivolcsHtml(html);
   assert.equal(events.length, 1);
