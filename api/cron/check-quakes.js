@@ -115,6 +115,15 @@ async function stageRecipientDeliveries(event, canonicalEventId) {
 }
 
 async function dispatchPendingDeliveries() {
+  // Recover claims left behind by a timed-out serverless invocation.
+  await query(
+    `UPDATE notification_deliveries
+     SET status = 'retryable_failure', next_attempt_at = NOW(),
+         last_error = COALESCE(last_error, 'Previous delivery attempt timed out'),
+         updated_at = NOW()
+     WHERE status = 'sending'
+       AND last_attempt_at < NOW() - INTERVAL '2 minutes'`
+  );
   const pending = await query(
     `SELECT id
      FROM notification_deliveries
