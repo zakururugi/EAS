@@ -27,7 +27,7 @@
     <!-- ShakeMap loading spinner (separate) -->
     <div v-if="shakemapLoading" class="shakemap-loading-spinner">
       <div class="spinner"></div>
-      <span>Loading ShakeMap...</span>
+      <span>Loading modelled intensity estimate...</span>
     </div>
 
     <!-- Error Banner -->
