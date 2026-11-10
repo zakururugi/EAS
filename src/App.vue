@@ -222,6 +222,8 @@ export default {
 
     // Geolocation watch ID
     let geoWatchId = null;
+    // Prevent an older poll response from overwriting a newer result.
+    let eventRequestSequence = 0;
 
     // ============================================================
     // Hash-based routing for shareable links
@@ -251,42 +253,130 @@ export default {
     // Methods
     // ============================================================
 
+    function isHistoryMode() {
+      return Boolean(dateFrom.value || dateTo.value);
+    }
+
     async function loadEvents() {
+      const requestId = ++eventRequestSequence;
+      const historyMode = isHistoryMode();
+      historyCursor.value = null;
+      historyHasMore.value = false;
+      historyLoadingMore.value = false;
+
       try {
         loading.value = true;
         sidebarLoading.value = true;
         error.value = null;
 
-        const data = await api.fetchLatestEvents({
-          minMagnitude: minMagnitude.value,
-          limit: 100,
-        });
+        const data = historyMode
+          ? await api.fetchEventHistory({
+              from: dateFrom.value,
+              to: dateTo.value,
+              minMagnitude: minMagnitude.value,
+              limit: 500,
+            })
+          : await api.fetchLatestEvents({
+              minMagnitude: minMagnitude.value,
+              limit: 100,
+            });
 
-        const allEvents = data.events || [];
+        if (requestId !== eventRequestSequence) return;
+        if (!data || !Array.isArray(data.events) || data.metadata?.status === 'unavailable') {
+          throw new Error('The earthquake service returned an invalid or unavailable feed.');
+        }
+
+        const allEvents = data.events;
+        // A sudden empty live catalogue is suspicious; an empty date-filtered
+        // archive result is legitimate and should clear the filtered view.
+        if (!historyMode && allEvents.length === 0 && events.value.length > 0) {
+          error.value = 'PHIVOLCS returned an empty feed. Keeping the last successfully loaded earthquake data.';
+          return;
+        }
 
         hasPHIVOLCS.value = allEvents.some((e) => e.source === 'PHIVOLCS');
-
         events.value = allEvents;
         lastUpdated.value = Date.now();
+        isOffline.value = false;
 
-        cacheEvents(allEvents);
+        if (historyMode) {
+          historyCursor.value = data.metadata?.nextCursor || null;
+          historyHasMore.value = data.metadata?.hasMore === true;
+        }
 
-        console.log(`[App] Loaded ${allEvents.length} events`);
+        if (allEvents.length > 0) {
+          await cacheEvents(allEvents);
+        }
+
+        console.log(`[App] Loaded ${allEvents.length} ${historyMode ? 'historical' : 'latest'} events`);
       } catch (err) {
+        if (requestId !== eventRequestSequence) return;
         console.error('[App] Failed to load events:', err.message);
         error.value = err.message;
 
-        if (!navigator.onLine) {
+        // Preserve the current in-memory catalogue on every failure. Only use
+        // IndexedDB when this session has no known-good events yet.
+        if (events.value.length === 0 && !navigator.onLine) {
           const cached = await loadCachedEvents();
+          if (requestId !== eventRequestSequence) return;
           if (cached.length > 0) {
             events.value = cached;
+            hasPHIVOLCS.value = cached.some((e) => e.source === 'PHIVOLCS');
             isOffline.value = true;
             error.value = null;
           }
         }
       } finally {
-        loading.value = false;
-        sidebarLoading.value = false;
+        if (requestId === eventRequestSequence) {
+          loading.value = false;
+          sidebarLoading.value = false;
+        }
+      }
+    }
+
+    async function loadMoreHistory() {
+      if (!isHistoryMode() || !historyHasMore.value || !historyCursor.value || historyLoadingMore.value) {
+        return;
+      }
+
+      const requestId = ++eventRequestSequence;
+      historyLoadingMore.value = true;
+      error.value = null;
+
+      try {
+        const data = await api.fetchEventHistory({
+          from: dateFrom.value,
+          to: dateTo.value,
+          minMagnitude: minMagnitude.value,
+          limit: 500,
+          cursor: historyCursor.value,
+        });
+
+        if (requestId !== eventRequestSequence) return;
+        if (!data || !Array.isArray(data.events) || data.metadata?.status === 'unavailable') {
+          throw new Error('The earthquake history service returned an invalid response.');
+        }
+
+        const existingIds = new Set(events.value.map((event) => event.id));
+        const additionalEvents = data.events.filter((event) => !existingIds.has(event.id));
+        events.value = [...events.value, ...additionalEvents];
+        if (additionalEvents.some((event) => event.source === 'PHIVOLCS')) {
+          hasPHIVOLCS.value = true;
+        }
+        historyCursor.value = data.metadata?.nextCursor || null;
+        historyHasMore.value = data.metadata?.hasMore === true;
+
+        if (additionalEvents.length > 0) {
+          await cacheEvents(events.value);
+        }
+      } catch (err) {
+        if (requestId === eventRequestSequence) {
+          error.value = err.message;
+        }
+      } finally {
+        if (requestId === eventRequestSequence) {
+          historyLoadingMore.value = false;
+        }
       }
     }
 
