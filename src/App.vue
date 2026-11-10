@@ -307,11 +307,13 @@ export default {
       } catch (err) {
         if (requestId !== eventRequestSequence) return;
         console.error('[App] Failed to load events:', err.message);
-        error.value = err.message;
+        error.value = historyMode
+          ? `${err.message} The displayed events are retained from the last successful request and are not verified for these dates.`
+          : err.message;
 
         // Preserve the current in-memory catalogue on every failure. Only use
         // IndexedDB when this session has no known-good events yet.
-        if (events.value.length === 0 && !navigator.onLine) {
+        if (events.value.length === 0 && !navigator.onLine && !historyMode) {
           const cached = await loadCachedEvents();
           if (requestId !== eventRequestSequence) return;
           if (cached.length > 0) {
