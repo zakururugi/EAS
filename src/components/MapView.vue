@@ -1,5 +1,9 @@
 <template>
   <div ref="mapContainer" class="map-container"></div>
+  <div v-if="intensityNotice" class="map-intensity-notice" role="status">
+    <span>{{ intensityNotice }}</span>
+    <button type="button" aria-label="Dismiss message" @click="intensityNotice = ''">×</button>
+  </div>
 </template>
 
 <script>
@@ -52,6 +56,10 @@ export default {
     const mapContainer = ref(null);
     let map = null;
     let eventClusterGroup = null;
+    const eventMarkers = new Map();
+    let lastFlownSelectionId = null;
+    const intensityNotice = ref('');
+    let intensityRequestSequence = 0;
     let shakemapLayerGroup = null;
     let zonesLayerGroup = null;
     let drawnItems = null;
@@ -167,6 +175,8 @@ export default {
     }
 
     function clearShakeMap() {
+      intensityRequestSequence += 1;
+      intensityNotice.value = '';
       if (shakemapLayerGroup) {
         shakemapLayerGroup.clearLayers();
       }
@@ -239,13 +249,87 @@ export default {
       return true;
     }
 
+    function renderOfficialDyfi(geojson, fitMap = true) {
+      const features = Array.isArray(geojson?.features) ? geojson.features : [];
+      if (features.length === 0) return false;
+
+      const observations = [];
+      for (const feature of features) {
+        const coordinates = feature?.geometry?.coordinates;
+        const longitude = Number(coordinates?.[0]);
+        const latitude = Number(coordinates?.[1]);
+        const properties = feature?.properties || {};
+        const intensity = Number(properties.cdi ?? properties.intensity);
+        if (
+          feature?.geometry?.type !== 'Point' ||
+          !Number.isFinite(latitude) ||
+          !Number.isFinite(longitude) ||
+          !Number.isFinite(intensity) ||
+          intensity <= 0 ||
+          intensity > 12
+        ) continue;
+        observations.push({ latitude, longitude, intensity, properties });
+      }
+      if (observations.length === 0) return false;
+
+      const layer = L.featureGroup();
+      for (const observation of observations) {
+        const level = Math.max(1, Math.min(10, Math.round(observation.intensity)));
+        const color = MMI_COLORS[level] || '#9aa7bd';
+        const responseCount = Number(observation.properties.nresp ?? observation.properties.responses);
+        const countLabel = Number.isFinite(responseCount) && responseCount >= 0
+          ? ' · ' + Math.trunc(responseCount) + ' responses'
+          : '';
+        const locality = observation.properties.name || observation.properties.place || '';
+        L.circleMarker([observation.latitude, observation.longitude], {
+          radius: 5 + Math.min(3, level * 0.25),
+          color,
+          weight: 1.5,
+          fillColor: color,
+          fillOpacity: 0.78,
+          opacity: 0.95,
+        })
+          .bindTooltip(
+            'USGS DYFI · community-reported MMI ' + observation.intensity.toFixed(1) +
+            (locality ? ' · ' + locality : '') + countLabel,
+            { sticky: true, className: 'shakemap-tooltip' }
+          )
+          .addTo(layer);
+      }
+
+      layer.addTo(shakemapLayerGroup);
+      if (!legendControl && map) {
+        legendControl = L.control({ position: 'bottomright' });
+        legendControl.onAdd = () => {
+          const div = L.DomUtil.create('div', 'map-legend shakemap-legend');
+          div.innerHTML = [
+            '<div class="legend-title">USGS DYFI · community reports</div>',
+            '<div class="legend-note">Reported MMI values, not instrumental contour measurements</div>',
+          ].join('');
+          return div;
+        };
+        legendControl.addTo(map);
+      }
+      const bounds = layer.getBounds();
+      if (fitMap && bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 9 });
+      return true;
+    }
+
     async function onShowShakeMap(e) {
+      const requestSequence = ++intensityRequestSequence;
       const eventId = e.detail;
-      if (!eventId) return;
+      if (!eventId) {
+        intensityNotice.value = '';
+        return;
+      }
 
       // Find the event in props
       const event = props.events.find((ev) => ev.id === eventId);
-      if (!event) return;
+      if (!event) {
+        intensityNotice.value = 'The selected earthquake is no longer in the current event list. Refresh the event list and try again.';
+        return;
+      }
+      intensityNotice.value = 'Loading intensity products…';
 
       // Clear previous shakemap
       shakemapLayerGroup.clearLayers();
@@ -254,23 +338,36 @@ export default {
         legendControl = null;
       }
 
-      // Prefer the official USGS ShakeMap product when the selected record is
-      // USGS-backed. If no product exists, fall back to the clearly labelled
-      // local EAS model estimate.
-      if (event.source === 'USGS' && event.sourceEventId) {
+      // A canonical event may prefer PHIVOLCS while also having a linked USGS
+      // source record. Search all provenance records before concluding that no
+      // official ShakeMap or community-reported DYFI layer exists.
+      const usgsSource = Array.isArray(event.sources)
+        ? event.sources.find((source) => source.provider === 'USGS' && source.providerEventId)
+        : null;
+      const usgsEventId = usgsSource?.providerEventId ||
+        (event.source === 'USGS' ? event.sourceEventId : null);
+
+      if (usgsEventId) {
         try {
           const response = await fetch(
-            `/api/events/usgs-products?eventId=${encodeURIComponent(event.sourceEventId)}`
+            '/api/events/usgs-products?eventId=' + encodeURIComponent(usgsEventId)
           );
           if (response.ok) {
             const products = await response.json();
-            if (renderOfficialShakeMap(products.shakemap?.geojson)) return;
+            if (requestSequence !== intensityRequestSequence) return;
+            const hasShakeMap = renderOfficialShakeMap(products.shakemap?.geojson);
+            const hasDyfi = renderOfficialDyfi(products.dyfi?.geojson, !hasShakeMap);
+            if (hasShakeMap || hasDyfi) {
+              intensityNotice.value = '';
+              return;
+            }
           }
         } catch (error) {
-          console.warn('[MapView] Official USGS ShakeMap unavailable:', error.message);
+          console.warn('[MapView] Official USGS intensity products unavailable:', error.message);
         }
       }
 
+      if (requestSequence !== intensityRequestSequence) return;
       const eventData = {
         magnitude: event.magnitude,
         depth: event.depth,
@@ -278,7 +375,21 @@ export default {
         longitude: event.longitude,
         place: event.place,
       };
-      generatedShakeMapForEvent(eventData);
+      const hasEstimate = generatedShakeMapForEvent(eventData);
+      if (hasEstimate) {
+        intensityNotice.value = '';
+      } else if (Number(event.magnitude) < 4) {
+        intensityNotice.value = 'No official USGS ShakeMap or DYFI reports are available. EAS estimates are shown only for events M4.0 and above.';
+      } else if (
+        event.latitude == null || event.longitude == null ||
+        event.depth == null ||
+        !Number.isFinite(Number(event.latitude)) ||
+        !Number.isFinite(Number(event.longitude))
+      ) {
+        intensityNotice.value = 'No intensity layer could be generated because this earthquake record is missing valid location or depth data.';
+      } else {
+        intensityNotice.value = 'No official ShakeMap or DYFI layer was found, and the EAS model estimate is below its MMI II display threshold. This does not mean the earthquake was not felt.';
+      }
     }
 
     /**
@@ -336,26 +447,30 @@ export default {
     }
 
     function generatedShakeMapForEvent(event) {
-      const mag = event.magnitude || 0;
-      const depth = event.depth || 10;
-      const lat = event.latitude;
-      const lng = event.longitude;
-      const siteAmp = props.soilType || 1.0;
+      const mag = Number(event.magnitude) || 0;
+      const depth = event.depth == null ? 10 : Number(event.depth);
+      const lat = Number(event.latitude);
+      const lng = Number(event.longitude);
+      const siteAmp = Number(props.soilType) || 1.0;
 
-      if (!lat || !lng || mag < 4.5) return;
+      if (
+        !Number.isFinite(lat) || lat < -90 || lat > 90 ||
+        !Number.isFinite(lng) || lng < -180 || lng > 180 ||
+        !Number.isFinite(depth) || depth < 0 || mag < 4
+      ) return false;
 
       // Epicentral MMI directly above the hypocenter (epicDist = 0, rHypo = depth)
       const epicMmi = Math.round(Math.min(10, Math.max(1, estimateMMI(mag, 0, depth))));
 
       // Build contour levels descending from epicentral MMI.
       // Skip MMI < 3 for moderate quakes (≤M6.5) to avoid unrealistic far-field rings.
-      const minMmiLevel = mag > 6.5 ? 2 : 3;
+      const minMmiLevel = 2;
       const levels = [];
       for (let mmi = Math.min(epicMmi, 10); mmi >= minMmiLevel; mmi--) {
         levels.push(mmi);
       }
 
-      if (levels.length === 0) return;
+      if (levels.length === 0) return false;
 
       // Corrected max-radius cap: 10^(mag/2) / 2  →  M5≈158 km, M6≈500 km, M7≈1581 km
       // (Previous ×5 multiplier was a 10× error, e.g. M5 gave 1581 km instead of 158 km)
@@ -372,7 +487,7 @@ export default {
         let radiusKm = getShakemapRadius(mag, mmi);
         if (radiusKm < 5) continue;
 
-        // Soil-type amplification: soft soil (siteAmp > 1) slightly widens the felt area
+        // Soil-type amplification: soft soil (siteAmp > 1) slightly widens the modelled intensity footprint
         radiusKm *= Math.sqrt(siteAmp);
         if (radiusKm > maxRadius) continue;
 
@@ -396,7 +511,7 @@ export default {
       }
 
       // Render the contour layer
-      if (features.length === 0) return;
+      if (features.length === 0) return false;
 
       const contourLayer = L.geoJSON({
         type: 'FeatureCollection',
@@ -426,6 +541,7 @@ export default {
         legendControl.onAdd = shakemapLegend.onAdd;
         legendControl.addTo(map);
       }
+      return true;
     }
 
     function flyToLocation(lat, lng, zoom) {
@@ -436,25 +552,38 @@ export default {
     }
 
     function createMagMarker(event, isSelected) {
-      const mag = event.magnitude || 0;
+      const mag = Number(event.magnitude) || 0;
       const color = getMagColor(mag);
       const radius = getMagRadius(mag);
       const size = radius * 2;
+      const iconSize = size + 36;
       const fontSize = Math.max(11, Math.min(16, radius * 0.55));
+      const eventAge = Date.now() - Number(event.time);
+      const isRecentSignificant = mag >= 4.5 &&
+        Number.isFinite(Number(event.time)) &&
+        eventAge >= 0 &&
+        eventAge <= 30 * 60 * 1000;
+      const pulse = isRecentSignificant
+        ? '<span class="quake-pulse" aria-hidden="true"></span>'
+        : '';
 
       return L.divIcon({
         className: 'mag-marker',
-        html: `<div class="mag-marker-inner" style="
-          width:${size}px; height:${size}px;
-          background:${color};
-          border:${isSelected ? '3px solid #ffffff' : event.source === 'USGS' ? '2px dashed #9aa7bd' : '2px solid rgba(255,255,255,0.7)'};
-          box-shadow:${isSelected ? '0 0 12px rgba(100,255,218,0.6)' : '0 0 4px rgba(0,0,0,0.5)'};
-          font-size:${fontSize}px;
-          line-height:${size}px;
-        ">${mag.toFixed(1)}</div>`,
-        iconSize: [size, size],
-        iconAnchor: [size / 2, size / 2],
-        popupAnchor: [0, -size / 2],
+        html: `<div class="mag-marker-wrap" style="width:${iconSize}px;height:${iconSize}px">
+          ${pulse}
+          <div class="mag-marker-inner" style="
+            position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+            width:${size}px; height:${size}px;
+            background:${color};
+            border:${isSelected ? '3px solid #ffffff' : event.source === 'USGS' ? '2px dashed #9aa7bd' : '2px solid rgba(255,255,255,0.7)'};
+            box-shadow:${isSelected ? '0 0 12px rgba(100,255,218,0.6)' : '0 0 4px rgba(0,0,0,0.5)'};
+            font-size:${fontSize}px;
+            line-height:${size}px;
+          ">${mag.toFixed(1)}</div>
+        </div>`,
+        iconSize: [iconSize, iconSize],
+        iconAnchor: [iconSize / 2, iconSize / 2],
+        popupAnchor: [0, -iconSize / 2],
       });
     }
 
@@ -589,18 +718,51 @@ export default {
 
     function renderEvents() {
       if (!eventClusterGroup) return;
-      eventClusterGroup.clearLayers();
-      if (!props.events || props.events.length === 0) return;
 
+      const activeEventIds = new Set();
+      const sourceEvents = Array.isArray(props.events) ? props.events : [];
       const filtered = props.mapMinMagnitude > 2
-        ? props.events.filter((e) => (e.magnitude || 0) >= props.mapMinMagnitude)
-        : props.events;
+        ? sourceEvents.filter((e) => (e.magnitude || 0) >= props.mapMinMagnitude)
+        : sourceEvents;
 
       filtered.forEach((event) => {
-        if (!event.latitude || !event.longitude) return;
+        const latitude = Number(event.latitude);
+        const longitude = Number(event.longitude);
+        if (
+          !event.id ||
+          event.latitude == null ||
+          event.longitude == null ||
+          !Number.isFinite(latitude) ||
+          !Number.isFinite(longitude)
+        ) return;
 
+        activeEventIds.add(event.id);
         const isSelected = event.id === props.selectedEventId;
-        const marker = L.marker([event.latitude, event.longitude], {
+        const eventAgeMs = Date.now() - Number(event.time);
+      const freshSignificantEvent = Number(event.magnitude) >= 4.5 &&
+        Number.isFinite(Number(event.time)) && eventAgeMs >= 0 && eventAgeMs <= 30 * 60 * 1000;
+      const sourceSignature = Array.isArray(event.sources)
+          ? event.sources.map((source) => String(source.provider || '') + ':' + String(source.providerEventId || '')).sort()
+          : [];
+        const fingerprint = JSON.stringify([
+          latitude, longitude, event.magnitude, event.time, event.depth,
+          event.place, event.source, event.sourceEventId, event.felt,
+          event.mmi, event.alert, event.tsunami, sourceSignature, freshSignificantEvent,
+        ]);
+
+        const existingMarker = eventMarkers.get(event.id);
+        if (
+          existingMarker &&
+          existingMarker._easFingerprint === fingerprint &&
+          existingMarker._easSelected === isSelected
+        ) return;
+
+        if (existingMarker) {
+          eventClusterGroup.removeLayer(existingMarker);
+          eventMarkers.delete(event.id);
+        }
+
+        const marker = L.marker([latitude, longitude], {
           icon: createMagMarker(event, isSelected),
           riseOnHover: true,
         });
@@ -700,23 +862,41 @@ export default {
           emit('select-event', event.id);
         });
 
+        marker._easFingerprint = fingerprint;
+        marker._easSelected = isSelected;
+        eventMarkers.set(event.id, marker);
         eventClusterGroup.addLayer(marker);
       });
 
-      // Fly to selected event, preserving current zoom level
-      if (props.selectedEventId && !isFlyingToSelected) {
-        const selEvent = props.events.find((e) => e.id === props.selectedEventId);
-        if (selEvent && selEvent.latitude && selEvent.longitude) {
+      for (const [eventId, existingMarker] of eventMarkers) {
+        if (!activeEventIds.has(eventId)) {
+          eventClusterGroup.removeLayer(existingMarker);
+          eventMarkers.delete(eventId);
+        }
+      }
+
+      // Only move the map when the user selects a different event, never on a poll.
+      if (!props.selectedEventId) {
+        lastFlownSelectionId = null;
+      } else if (props.selectedEventId !== lastFlownSelectionId) {
+        const selEvent = sourceEvents.find((e) => e.id === props.selectedEventId);
+        if (
+          selEvent &&
+          selEvent.latitude != null &&
+          selEvent.longitude != null &&
+          Number.isFinite(Number(selEvent.latitude)) &&
+          Number.isFinite(Number(selEvent.longitude))
+        ) {
+          lastFlownSelectionId = props.selectedEventId;
           isFlyingToSelected = true;
           const currentZoom = map.getZoom();
-          map.flyTo([selEvent.latitude, selEvent.longitude], currentZoom, {
+          map.flyTo([Number(selEvent.latitude), Number(selEvent.longitude)], currentZoom, {
             duration: 0.8,
           });
           map.once('moveend', () => { isFlyingToSelected = false; });
         }
       }
     }
-
     async function shareEventAsImage(event) {
       try {
         const { toPng } = await import('html-to-image');
@@ -815,6 +995,7 @@ export default {
             <div class="legend-item"><span style="background:#ffd600"></span> 5.0 – 5.9</div>
             <div class="legend-item"><span style="background:#00e676"></span> 4.5 – 4.9</div>
           </div>
+          <div class="legend-note">Red ripple: new M4.5+ event (30 min); not a felt-area boundary</div>
         `;
         return div;
       },
@@ -905,10 +1086,11 @@ export default {
       if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
       if (magnitudeLegendControl && map) { map.removeControl(magnitudeLegendControl); }
       if (seismogramAnimId) cancelAnimationFrame(seismogramAnimId);
+      intensityRequestSequence += 1;
       if (map) { map.remove(); map = null; }
     });
 
-    return { mapContainer, flyToLocation };
+    return { mapContainer, flyToLocation, intensityNotice };
   },
 };
 </script>
@@ -916,7 +1098,64 @@ export default {
 <style>
 .map-container { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
 
-.mag-marker { background: transparent !important; border: none !important; }
+.map-intensity-notice {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 193, 7, 0.45);
+  border-radius: 8px;
+  background: rgba(15, 15, 35, 0.96);
+  color: #f3d58b;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.map-intensity-notice button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: #f3d58b;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mag-marker { background: transparent !important; border: none !important; overflow: visible !important; }
+
+.mag-marker-wrap {
+  position: relative;
+  display: block;
+  overflow: visible;
+}
+.quake-pulse {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  margin-left: -16px;
+  margin-top: -16px;
+  border: 2px solid rgba(255, 23, 68, 0.9);
+  border-radius: 50%;
+  pointer-events: none;
+  transform: scale(0.8);
+  animation: quake-ripple 2.4s ease-out infinite;
+}
+@keyframes quake-ripple {
+  0% { transform: scale(0.8); opacity: 0.85; }
+  75% { opacity: 0.2; }
+  100% { transform: scale(2.7); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quake-pulse { animation: none; transform: scale(1.7); opacity: 0.28; }
+}
 
 .mag-marker-inner {
   border-radius: 50%; display: flex; align-items: center; justify-content: center;

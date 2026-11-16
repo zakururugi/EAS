@@ -227,6 +227,9 @@ export default {
     let geoWatchId = null;
     // Prevent an older poll response from overwriting a newer result.
     let eventRequestSequence = 0;
+    let silentRefreshInFlight = false;
+    let userInitiatedLoadInFlight = false;
+    let eventsPollTimer = null;
 
     // ============================================================
     // Hash-based routing for shareable links
@@ -275,11 +278,21 @@ export default {
       dateTo.value = today;
     }
 
+    function isDefaultRecentWindow() {
+      const today = getManilaDateString();
+      const start = new Date(today + 'T00:00:00+08:00');
+      start.setUTCDate(start.getUTCDate() - 13);
+      return dateFrom.value === getManilaDateString(start) && dateTo.value === today;
+    }
+
     function isHistoryMode() {
       return Boolean(dateFrom.value || dateTo.value);
     }
 
-    async function loadEvents() {
+    async function loadEvents({ silent = false } = {}) {
+      if (silent && (silentRefreshInFlight || loading.value || sidebarLoading.value)) return;
+      if (silent) silentRefreshInFlight = true;
+
       const requestId = ++eventRequestSequence;
       const historyMode = isHistoryMode();
       historyCursor.value = null;
@@ -287,9 +300,14 @@ export default {
       historyLoadingMore.value = false;
 
       try {
-        loading.value = true;
-        sidebarLoading.value = true;
-        error.value = null;
+        // Never replace a populated view with skeletons during a refresh.
+        // The initial empty screen may still show its normal loader.
+        if (!silent) {
+          const showInitialLoader = events.value.length === 0;
+          loading.value = showInitialLoader;
+          sidebarLoading.value = showInitialLoader;
+          error.value = null;
+        }
 
         const data = await api.fetchEventHistory({
           from: dateFrom.value,
@@ -304,17 +322,18 @@ export default {
         }
 
         const allEvents = data.events;
-        // The PHIVOLCS parser now fails explicitly on unrecognized or malformed
-        // pages, so a successful empty response is a valid filtered result.
         hasPHIVOLCS.value = allEvents.some((e) => e.source === 'PHIVOLCS');
         events.value = allEvents;
         lastUpdated.value = Date.now();
         isOffline.value = false;
 
-        if (historyMode) {
-          historyCursor.value = data.metadata?.nextCursor || null;
-          historyHasMore.value = data.metadata?.hasMore === true;
+        if (selectedEventId.value) {
+          const refreshedSelection = allEvents.find((event) => event.id === selectedEventId.value);
+          if (refreshedSelection) selectedEvent.value = refreshedSelection;
         }
+
+        historyCursor.value = data.metadata?.nextCursor || null;
+        historyHasMore.value = data.metadata?.hasMore === true;
 
         if (allEvents.length > 0) {
           await cacheEvents(allEvents);
@@ -325,28 +344,38 @@ export default {
           error.value = 'PHIVOLCS archive retrieval is limited to ' + archiveLookup.maxDays + ' days per search. Narrow the selected date range.';
         } else if (archiveLookup?.status === 'range_too_dense' || archiveLookup?.status === 'partial' || archiveLookup?.status === 'unavailable') {
           error.value = archiveLookup.message || 'Some PHIVOLCS archive data could not be retrieved. Showing records already stored in EAS.';
+        } else {
+          error.value = null;
         }
+
         console.log('[App] Loaded ' + allEvents.length + (historyMode ? ' historical events' : ' recent events'));
       } catch (err) {
         if (requestId !== eventRequestSequence) return;
-        console.error('[App] Failed to load events:', err.message);
-        error.value = historyMode
-          ? `${err.message} The displayed events are retained from the last successful request and are not verified for these dates.`
-          : err.message;
 
-        // Preserve the current in-memory catalogue on every failure. Only use
-        // IndexedDB when this session has no known-good events yet.
-        if (events.value.length === 0 && !navigator.onLine && !historyMode) {
-          const cached = await loadCachedEvents();
-          if (requestId !== eventRequestSequence) return;
-          if (cached.length > 0) {
-            events.value = cached;
-            hasPHIVOLCS.value = cached.some((e) => e.source === 'PHIVOLCS');
-            isOffline.value = true;
-            error.value = null;
+        if (silent) {
+          // Keep the last known-good event set on transient poll failures.
+          console.warn('[App] Silent earthquake refresh failed; retaining current data:', err.message);
+        } else {
+          console.error('[App] Failed to load events:', err.message);
+          error.value = historyMode
+            ? err.message + ' The displayed events are retained from the last successful request and are not verified for these dates.'
+            : err.message;
+
+          // Preserve the current in-memory catalogue on every failure. Only use
+          // IndexedDB when this session has no known-good events yet.
+          if (events.value.length === 0 && !navigator.onLine && !historyMode) {
+            const cached = await loadCachedEvents();
+            if (requestId !== eventRequestSequence) return;
+            if (cached.length > 0) {
+              events.value = cached;
+              hasPHIVOLCS.value = cached.some((e) => e.source === 'PHIVOLCS');
+              isOffline.value = true;
+              error.value = null;
+            }
           }
         }
       } finally {
+        if (silent) silentRefreshInFlight = false;
         if (requestId === eventRequestSequence) {
           loading.value = false;
           sidebarLoading.value = false;
@@ -403,8 +432,11 @@ export default {
     async function refreshData() {
       if (refreshing.value) return;
       refreshing.value = true;
-      await loadEvents();
-      refreshing.value = false;
+      try {
+        await loadEvents({ silent: true });
+      } finally {
+        refreshing.value = false;
+      }
     }
 
     function dismissError() {
@@ -803,7 +835,7 @@ export default {
       const cleanup = onNetworkChange(
         () => {
           isOffline.value = false;
-          loadEvents();
+          loadEvents({ silent: events.value.length > 0 });
         },
         () => {
           isOffline.value = true;
@@ -853,14 +885,20 @@ export default {
       await loadEvents();
       await loadZones();
 
-      setInterval(async () => {
-        await loadEvents();
+      eventsPollTimer = window.setInterval(() => {
+        if (document.visibilityState === 'visible' && isDefaultRecentWindow()) {
+          loadEvents({ silent: true });
+        }
       }, 60000);
     });
 
     onBeforeUnmount(() => {
       stopWatchingLocation();
       window.removeEventListener('hashchange', handleHashChange);
+      if (eventsPollTimer) {
+        window.clearInterval(eventsPollTimer);
+        eventsPollTimer = null;
+      }
     });
 
     function getUserLocation() {
