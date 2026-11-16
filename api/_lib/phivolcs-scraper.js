@@ -269,7 +269,15 @@ export async function fetchPhivolcsArchiveMonths() {
       failures.push(result.sourceUrl + ': ' + result.error.message);
       continue;
     }
-    for (const archive of result.archives) all.set(archive.key, archive);
+    for (const archive of result.archives) {
+      const existing = all.get(archive.key);
+      if (!existing) {
+        // PHIVOLCS_URLS is ordered by preference: keep the primary host first.
+        all.set(archive.key, { ...archive, alternateUrls: [] });
+      } else if (archive.url !== existing.url && !existing.alternateUrls.includes(archive.url)) {
+        existing.alternateUrls.push(archive.url);
+      }
+    }
   }
 
   if (all.size === 0 && failures.length > 0) {
@@ -303,14 +311,23 @@ export async function fetchPhivolcsArchiveMonth(year, month, availableArchives =
   const archive = archives.find((item) => item.key === key);
   if (!archive) throw new Error(`PHIVOLCS archive month ${key} is not currently linked by the official archive index.`);
 
-  const { data: html } = await axios.get(archive.url, {
-    timeout: 12000,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
-      Accept: 'text/html,application/xhtml+xml',
-    },
-  });
-  return parsePhivolcsHtml(html, archive.url);
+  const urls = [archive.url, ...(archive.alternateUrls || [])];
+  const failures = [];
+  for (const url of urls) {
+    try {
+      const { data: html } = await axios.get(url, {
+        timeout: 12000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      });
+      return parsePhivolcsHtml(html, url);
+    } catch (error) {
+      failures.push(url + ': ' + error.message);
+    }
+  }
+  throw new Error('All official PHIVOLCS archive URLs failed for ' + key + ': ' + failures.join(' | '));
 }
 
 export async function scrapePhivolcsEvents() {

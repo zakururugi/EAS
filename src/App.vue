@@ -375,7 +375,11 @@ export default {
           }
         }
       } finally {
-        if (silent) silentRefreshInFlight = false;
+        if (silent) {
+          silentRefreshInFlight = false;
+        } else {
+          userInitiatedLoadInFlight = false;
+        }
         if (requestId === eventRequestSequence) {
           loading.value = false;
           sidebarLoading.value = false;

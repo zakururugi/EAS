@@ -145,18 +145,13 @@ async function importRequestedPhivolcsArchive(filters) {
   }
 
   const uniqueEvents = [...new Map(candidateEvents.map((event) => [event.id || event.eventId, event])).values()];
-  if (uniqueEvents.length > MAX_ON_DEMAND_EVENTS) {
-    return {
-      status: 'range_too_dense',
-      imported: 0,
-      maxEvents: MAX_ON_DEMAND_EVENTS,
-      message: 'Too many events were found for one request. Narrow the selected date range.',
-    };
-  }
-
   let imported = 0;
+  let missingEvents = [];
+
   if (uniqueEvents.length > 0) {
-    const providerIds = uniqueEvents.map((event) => event.id || event.eventId);
+    const providerIds = uniqueEvents
+      .map((event) => event.id || event.eventId)
+      .filter((id) => typeof id === 'string' && id.length > 0);
     const existing = await query(
       [
         'SELECT provider_event_id',
@@ -167,12 +162,26 @@ async function importRequestedPhivolcsArchive(filters) {
       [providerIds]
     );
     const existingIds = new Set(existing.rows.map((row) => row.provider_event_id));
-    const missingEvents = uniqueEvents.filter((event) => !existingIds.has(event.id || event.eventId));
+    missingEvents = uniqueEvents.filter((event) => !existingIds.has(event.id || event.eventId));
+  }
 
-    for (const event of missingEvents) {
-      await persistPhivolcsEvent(event, query);
-      imported += 1;
-    }
+  // The limit protects the serverless import loop, not the search result set.
+  // Do not report a dense range as a failure when those source events are
+  // already persisted in Supabase and can be returned immediately.
+  if (missingEvents.length > MAX_ON_DEMAND_EVENTS) {
+    return {
+      status: 'range_too_dense',
+      imported: 0,
+      matched: uniqueEvents.length,
+      missing: missingEvents.length,
+      maxEvents: MAX_ON_DEMAND_EVENTS,
+      message: 'Too many missing PHIVOLCS records need importing in one request. Narrow the selected date range.',
+    };
+  }
+
+  for (const event of missingEvents) {
+    await persistPhivolcsEvent(event, query);
+    imported += 1;
   }
 
   return {
