@@ -86,7 +86,7 @@ export default async function handler(req, res) {
     );
 
     const stateResult = await query(
-      `SELECT backfill_from, backfill_to, backfill_completed_through
+      `SELECT backfill_from, backfill_to, backfill_completed_through, backfill_cursor
        FROM source_sync_state
        WHERE provider = 'USGS' AND lease_owner = $1`,
       [leaseOwner]

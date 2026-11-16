@@ -10,11 +10,11 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
-const PHIVOLCS_URLS = [
-  // Current official PHIVOLCS earthquake table endpoint.
-  'https://earthquake.phivolcs.dost.gov.ph/Tsunami_Latest.html',
-  // Legacy official host retained as a secondary fallback.
-  'https://tsunami.phivolcs.dost.gov.ph/Tsunami_Latest.html',
+export const PHIVOLCS_URLS = [
+  // Current official PHIVOLCS earthquake bulletin page.
+  'https://earthquake.phivolcs.dost.gov.ph/',
+  // Official alternate bulletin page; currently serves EQLatest.html.
+  'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html',
 ];
 const PHILIPPINE_OFFSET_MS = 8 * 60 * 60 * 1000;
 

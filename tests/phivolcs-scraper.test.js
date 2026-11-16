@@ -7,6 +7,7 @@ import {
   parsePhivolcsEventRow,
   parsePhivolcsHtml,
   discoverPhivolcsArchiveMonths,
+  PHIVOLCS_URLS,
 } from '../api/_lib/phivolcs-scraper.js';
 
 test('parses PHIVOLCS morning time as Philippine local time', () => {
@@ -111,4 +112,12 @@ test('discovers official PHIVOLCS monthly archive links by year and month', () =
   const archives = discoverPhivolcsArchiveMonths(html, 'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html');
   assert.deepEqual(archives.map((item) => item.key), ['2025-12', '2026-01', '2026-02']);
   assert.ok(archives.every((item) => item.url.startsWith('https://tsunami.phivolcs.dost.gov.ph/')));
+});
+
+
+test('uses the current official PHIVOLCS earthquake bulletin endpoints', () => {
+  assert.deepEqual(PHIVOLCS_URLS, [
+    'https://earthquake.phivolcs.dost.gov.ph/',
+    'https://tsunami.phivolcs.dost.gov.ph/EQLatest.html',
+  ]);
 });

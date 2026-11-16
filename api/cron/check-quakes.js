@@ -245,6 +245,28 @@ async function dispatchPendingDeliveries() {
 }
 
 export default async function handler(req, res) {
+  // /api/cron/health is rewritten here so Hobby deployments stay within the
+  // 12-function limit without removing the existing public health URL.
+  if (req.query?.health === '1') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.status(200).end();
+      return;
+    }
+    if (req.method !== 'GET') {
+      res.status(405).json({ error: 'Method not allowed. Use GET.' });
+      return;
+    }
+    res.status(200).json({
+      status: 'ok',
+      timestamp: Date.now(),
+      version: '1.0.0',
+    });
+    return;
+  }
+
   setCors(res);
 
   if (req.method === 'OPTIONS') {
