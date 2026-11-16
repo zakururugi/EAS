@@ -8,11 +8,21 @@ import {
 
 const id = '6b4f9d28-1c0d-4f2d-8e5b-7a2f0d9c1234';
 
-test('parses inclusive date filters and turns the end date into an exclusive boundary', () => {
+test('converts inclusive Philippine calendar dates into UTC+08 boundaries', () => {
   const result = parseHistoryQuery({ from: '2026-01-01', to: '2026-01-31', limit: '100' });
-  assert.equal(result.from, '2026-01-01T00:00:00.000Z');
-  assert.equal(result.to, '2026-02-01T00:00:00.000Z');
+  assert.equal(result.from, '2025-12-31T16:00:00.000Z');
+  assert.equal(result.to, '2026-01-31T16:00:00.000Z');
+  assert.equal(result.fromDate, '2026-01-01');
+  assert.equal(result.toDate, '2026-01-31');
+  assert.equal(result.rangeDays, 31);
   assert.equal(result.limit, 100);
+});
+
+test('handles Philippine date boundaries across month and leap-day transitions', () => {
+  const leapDay = parseHistoryQuery({ from: '2024-02-29', to: '2024-02-29' });
+  assert.equal(leapDay.from, '2024-02-28T16:00:00.000Z');
+  assert.equal(leapDay.to, '2024-02-29T16:00:00.000Z');
+  assert.equal(leapDay.rangeDays, 1);
 });
 
 test('encodes and decodes stable keyset pagination cursors', () => {

@@ -1,38 +1,34 @@
 /**
- * GET /api/phivolcs/earthquakes
+ * Legacy compatibility endpoint.
  *
- * Returns earthquake data scraped from the PHIVOLCS website as JSON.
- * Uses the shared phivolcs-scraper module.
+ * This route previously returned the complete PHIVOLCS feed (hundreds of
+ * rows), which made scheduled invocations exceed Vercel's output limit. Live
+ * ingestion belongs to /api/cron/check-quakes; bounded history queries belong
+ * to /api/events/history. Keep this response small for any stale external
+ * schedule until it is removed from the Vercel Cron Jobs screen.
  */
 
-import { scrapePhivolcsEvents } from '../_lib/phivolcs-scraper.js';
-
 export default async function handler(req, res) {
-  // Allow GET requests only
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
   if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    res.setHeader('Allow', 'GET, OPTIONS');
+    res.status(405).json({ error: 'Method not allowed. Use GET.' });
+    return;
   }
 
-  try {
-    const earthquakes = await scrapePhivolcsEvents();
-
-    res.status(200).json({
-      source: 'PHIVOLCS',
-      fetchedAt: new Date().toISOString(),
-      count: earthquakes.length,
-      earthquakes: earthquakes.map(e => ({
-        datetime: new Date(e.time).toISOString(),
-        depth: e.depth,
-        magnitude: e.magnitude,
-        location: e.place,
-        latitude: e.latitude,
-        longitude: e.longitude,
-        eventId: e.eventId,
-      })),
-    });
-
-  } catch (error) {
-    console.error('[PHIVOLCS Scraper]', error.message);
-    res.status(502).json({ error: 'Failed to fetch or parse PHIVOLCS data', details: error.message });
-  }
+  res.status(200).json({
+    source: 'PHIVOLCS',
+    status: 'deprecated',
+    fetchedAt: new Date().toISOString(),
+    count: 0,
+    message: 'This legacy full-feed export is disabled. Scheduled ingestion uses /api/cron/check-quakes. Recent and historical browsing uses /api/events/history.',
+    removeSchedule: true,
+  });
 }

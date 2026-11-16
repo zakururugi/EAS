@@ -217,6 +217,9 @@ export default {
     const fcmStatus = ref('idle');
     const dateFrom = ref('');
     const dateTo = ref('');
+    const historyCursor = ref(null);
+    const historyHasMore = ref(false);
+    const historyLoadingMore = ref(false);
 
     const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY || '';
 
@@ -253,6 +256,25 @@ export default {
     // Methods
     // ============================================================
 
+    function getManilaDateString(date = new Date()) {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Manila',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(date);
+      const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+      return values.year + '-' + values.month + '-' + values.day;
+    }
+
+    function setRecentDateRange() {
+      const today = getManilaDateString();
+      const start = new Date(today + 'T00:00:00+08:00');
+      start.setUTCDate(start.getUTCDate() - 13);
+      dateFrom.value = getManilaDateString(start);
+      dateTo.value = today;
+    }
+
     function isHistoryMode() {
       return Boolean(dateFrom.value || dateTo.value);
     }
@@ -269,17 +291,12 @@ export default {
         sidebarLoading.value = true;
         error.value = null;
 
-        const data = historyMode
-          ? await api.fetchEventHistory({
-              from: dateFrom.value,
-              to: dateTo.value,
-              minMagnitude: minMagnitude.value,
-              limit: 500,
-            })
-          : await api.fetchLatestEvents({
-              minMagnitude: minMagnitude.value,
-              limit: 100,
-            });
+        const data = await api.fetchEventHistory({
+          from: dateFrom.value,
+          to: dateTo.value,
+          minMagnitude: minMagnitude.value,
+          limit: 500,
+        });
 
         if (requestId !== eventRequestSequence) return;
         if (!data || !Array.isArray(data.events) || data.metadata?.status === 'unavailable') {
@@ -303,7 +320,13 @@ export default {
           await cacheEvents(allEvents);
         }
 
-        console.log(`[App] Loaded ${allEvents.length} ${historyMode ? 'historical' : 'latest'} events`);
+        const archiveLookup = data.metadata?.archiveLookup;
+        if (archiveLookup?.status === 'range_too_wide') {
+          error.value = 'PHIVOLCS archive retrieval is limited to ' + archiveLookup.maxDays + ' days per search. Narrow the selected date range.';
+        } else if (archiveLookup?.status === 'range_too_dense' || archiveLookup?.status === 'partial' || archiveLookup?.status === 'unavailable') {
+          error.value = archiveLookup.message || 'Some PHIVOLCS archive data could not be retrieved. Showing records already stored in EAS.';
+        }
+        console.log('[App] Loaded ' + allEvents.length + (historyMode ? ' historical events' : ' recent events'));
       } catch (err) {
         if (requestId !== eventRequestSequence) return;
         console.error('[App] Failed to load events:', err.message);
@@ -713,8 +736,7 @@ export default {
     }
 
     function resetDates() {
-      dateFrom.value = '';
-      dateTo.value = '';
+      setRecentDateRange();
       loadEvents();
     }
 
@@ -826,6 +848,8 @@ export default {
       handleHashChange();
       window.addEventListener('hashchange', handleHashChange);
 
+      // Open the app on a rolling 14-day window using Philippine calendar dates.
+      setRecentDateRange();
       await loadEvents();
       await loadZones();
 

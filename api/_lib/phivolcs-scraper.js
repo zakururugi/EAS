@@ -273,7 +273,7 @@ export async function fetchPhivolcsArchiveMonths() {
   return [...all.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
-export async function fetchPhivolcsArchiveMonth(year, month) {
+export async function fetchPhivolcsArchiveMonth(year, month, availableArchives = null) {
   if (!Number.isInteger(year) || year < 1900 || year > new Date().getUTCFullYear()) {
     throw new TypeError('Invalid PHIVOLCS archive year.');
   }
@@ -282,7 +282,7 @@ export async function fetchPhivolcsArchiveMonth(year, month) {
   }
 
   const key = `${year}-${String(month).padStart(2, '0')}`;
-  const archives = await fetchPhivolcsArchiveMonths();
+  const archives = Array.isArray(availableArchives) ? availableArchives : await fetchPhivolcsArchiveMonths();
   const archive = archives.find((item) => item.key === key);
   if (!archive) throw new Error(`PHIVOLCS archive month ${key} is not currently linked by the official archive index.`);
 

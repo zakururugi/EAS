@@ -1,10 +1,11 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function parseDateOnly(value, name) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || !DATE_PATTERN.test(value)) {
-    const error = new Error(`${name} must use YYYY-MM-DD format.`);
+    const error = new Error(name + ' must use YYYY-MM-DD format.');
     error.statusCode = 400;
     throw error;
   }
@@ -15,11 +16,22 @@ function parseDateOnly(value, name) {
     date.getUTCMonth() !== month - 1 ||
     date.getUTCDate() !== day
   ) {
-    const error = new Error(`${name} is not a valid calendar date.`);
+    const error = new Error(name + ' is not a valid calendar date.');
     error.statusCode = 400;
     throw error;
   }
   return value;
+}
+
+function manilaMidnightUtc(dateOnly, addDays = 0) {
+  const [year, month, day] = dateOnly.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + addDays) - MANILA_OFFSET_MS).toISOString();
+}
+
+function calendarDayDistance(from, to) {
+  const start = Date.parse(from + 'T00:00:00.000Z');
+  const end = Date.parse(to + 'T00:00:00.000Z');
+  return Math.floor((end - start) / 86400000) + 1;
 }
 
 export function decodeHistoryCursor(value) {
@@ -60,13 +72,13 @@ export function encodeHistoryCursor(timestamp, id) {
   if (!Number.isFinite(new Date(timestamp).getTime()) || !UUID_PATTERN.test(String(id))) {
     throw new TypeError('Cannot encode an invalid history cursor.');
   }
-  return Buffer.from(`${new Date(timestamp).toISOString()}|${id}`).toString('base64url');
+  return Buffer.from(new Date(timestamp).toISOString() + '|' + id).toString('base64url');
 }
 
 export function parseHistoryQuery(query = {}) {
-  const from = parseDateOnly(query.from, 'from');
-  const to = parseDateOnly(query.to, 'to');
-  if (from && to && from > to) {
+  const fromDate = parseDateOnly(query.from, 'from');
+  const toDate = parseDateOnly(query.to, 'to');
+  if (fromDate && toDate && fromDate > toDate) {
     const error = new Error('from must be on or before to.');
     error.statusCode = 400;
     throw error;
@@ -89,8 +101,12 @@ export function parseHistoryQuery(query = {}) {
   }
 
   return {
-    from: from ? `${from}T00:00:00.000Z` : null,
-    to: to ? new Date(new Date(`${to}T00:00:00.000Z`).getTime() + 86400000).toISOString() : null,
+    // PHIVOLCS dates are Philippine Standard Time (UTC+08:00), not UTC.
+    from: fromDate ? manilaMidnightUtc(fromDate) : null,
+    to: toDate ? manilaMidnightUtc(toDate, 1) : null,
+    fromDate,
+    toDate,
+    rangeDays: fromDate && toDate ? calendarDayDistance(fromDate, toDate) : null,
     minMagnitude,
     limit,
     cursor: decodeHistoryCursor(query.cursor),

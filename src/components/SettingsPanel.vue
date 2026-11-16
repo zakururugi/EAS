@@ -140,7 +140,7 @@
       <section class="setting-section">
         <h3>Date Range</h3>
         <p class="setting-desc">
-          Search the EAS historical archive by date. PHIVOLCS remains the official alert source; USGS records are supplemental.
+          The map opens with the latest 14 days. Older searches retrieve the matching PHIVOLCS monthly archive when available and save missing records to EAS. Dates use Philippine time.
         </p>
         <div class="date-range-group">
           <div class="date-field">
@@ -165,8 +165,8 @@
             <button class="settings-btn primary" @click="$emit('apply-dates')" :disabled="!dateFrom && !dateTo">
               Apply
             </button>
-            <button class="settings-btn secondary" @click="$emit('reset-dates')" :disabled="!dateFrom && !dateTo">
-              Reset
+            <button class="settings-btn secondary" @click="$emit('reset-dates')">
+              Last 14 days
             </button>
           </div>
         </div>
