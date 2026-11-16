@@ -247,28 +247,33 @@ export function discoverPhivolcsArchiveMonths(html, baseUrl = PHIVOLCS_URLS[0]) 
 }
 
 export async function fetchPhivolcsArchiveMonths() {
-  const failures = [];
-  const all = new Map();
-
-  for (const sourceUrl of PHIVOLCS_URLS) {
+  const results = await Promise.all(PHIVOLCS_URLS.map(async (sourceUrl) => {
     try {
       const { data: html } = await axios.get(sourceUrl, {
-        timeout: 15000,
+        timeout: 8000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
           Accept: 'text/html,application/xhtml+xml',
         },
       });
-      for (const archive of discoverPhivolcsArchiveMonths(html, sourceUrl)) {
-        all.set(archive.key, archive);
-      }
+      return { sourceUrl, archives: discoverPhivolcsArchiveMonths(html, sourceUrl), error: null };
     } catch (error) {
-      failures.push(`${sourceUrl}: ${error.message}`);
+      return { sourceUrl, archives: [], error };
     }
+  }));
+
+  const failures = [];
+  const all = new Map();
+  for (const result of results) {
+    if (result.error) {
+      failures.push(result.sourceUrl + ': ' + result.error.message);
+      continue;
+    }
+    for (const archive of result.archives) all.set(archive.key, archive);
   }
 
   if (all.size === 0 && failures.length > 0) {
-    throw new Error(`Unable to discover PHIVOLCS archive months: ${failures.join(' | ')}`);
+    throw new Error('Unable to discover PHIVOLCS archive months: ' + failures.join(' | '));
   }
   return [...all.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -287,7 +292,7 @@ export async function fetchPhivolcsArchiveMonth(year, month, availableArchives =
   if (!archive) throw new Error(`PHIVOLCS archive month ${key} is not currently linked by the official archive index.`);
 
   const { data: html } = await axios.get(archive.url, {
-    timeout: 20000,
+    timeout: 12000,
     headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; EarthquakeAlertSystem/1.0)',
       Accept: 'text/html,application/xhtml+xml',

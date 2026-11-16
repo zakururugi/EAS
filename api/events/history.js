@@ -10,7 +10,7 @@
 
 import { query } from '../_lib/db.js';
 import { encodeHistoryCursor, parseHistoryQuery } from '../_lib/history-query.js';
-import { fetchPhivolcsArchiveMonths, fetchPhivolcsArchiveMonth } from '../_lib/phivolcs-scraper.js';
+import { fetchPhivolcsArchiveMonths, fetchPhivolcsArchiveMonth, fetchPhivolcsEvents } from '../_lib/phivolcs-scraper.js';
 import { persistPhivolcsEvent } from '../_lib/ingestion/persist-phivolcs-event.js';
 
 const MAX_ON_DEMAND_DAYS = 14;
@@ -96,24 +96,51 @@ async function importRequestedPhivolcsArchive(filters) {
   }
 
   const archiveByMonth = new Map(archives.map((archive) => [archive.key, archive]));
+  const currentMonthKey = getManilaDate().slice(0, 7);
+  let currentMonthEvents = null;
+
+  function appendMatchingEvents(events) {
+    candidateEvents.push(...events.filter((event) => {
+      const timestamp = Number(event.time);
+      return Number.isFinite(timestamp) && timestamp >= startMs && timestamp < endMs;
+    }));
+  }
 
   for (const key of monthKeys) {
     const archive = archiveByMonth.get(key);
-    if (!archive) {
+    if (!archive && key !== currentMonthKey) {
       failures.push(key);
+      continue;
+    }
+
+    if (!archive && key === currentMonthKey) {
+      try {
+        currentMonthEvents = currentMonthEvents || await fetchPhivolcsEvents();
+        appendMatchingEvents(currentMonthEvents);
+      } catch (error) {
+        console.error('[events/history] Current PHIVOLCS feed fallback failed:', error.message);
+        failures.push(key);
+      }
       continue;
     }
 
     try {
       const [year, month] = key.split('-').map(Number);
       const monthEvents = await fetchPhivolcsArchiveMonth(year, month, archives);
-      candidateEvents.push(...monthEvents.filter((event) => {
-        const timestamp = Number(event.time);
-        return Number.isFinite(timestamp) && timestamp >= startMs && timestamp < endMs;
-      }));
+      appendMatchingEvents(monthEvents);
     } catch (error) {
       console.error('[events/history] PHIVOLCS archive ' + key + ' failed:', error.message);
-      failures.push(key);
+      if (key === currentMonthKey) {
+        try {
+          currentMonthEvents = currentMonthEvents || await fetchPhivolcsEvents();
+          appendMatchingEvents(currentMonthEvents);
+        } catch (fallbackError) {
+          console.error('[events/history] Current PHIVOLCS feed fallback failed:', fallbackError.message);
+          failures.push(key);
+        }
+      } else {
+        failures.push(key);
+      }
     }
   }
 
