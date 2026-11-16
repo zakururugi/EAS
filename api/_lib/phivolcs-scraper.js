@@ -275,6 +275,18 @@ export async function fetchPhivolcsArchiveMonths() {
   if (all.size === 0 && failures.length > 0) {
     throw new Error('Unable to discover PHIVOLCS archive months: ' + failures.join(' | '));
   }
+
+  // The active month is a live bulletin, not a closed monthly archive.
+  // Historical date searches use the official live feed for this month, while
+  // the archive index is reserved for completed months.
+  const currentParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(new Date());
+  const currentValues = Object.fromEntries(currentParts.map((part) => [part.type, part.value]));
+  all.delete(currentValues.year + '-' + currentValues.month);
+
   return [...all.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
